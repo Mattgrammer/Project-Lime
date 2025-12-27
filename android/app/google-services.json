@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "254821518092",
+    "project_id": "limeapp-34c6f",
+    "storage_bucket": "limeapp-34c6f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:254821518092:android:b2572be2fe70ed15a69729",
+        "android_client_info": {
+          "package_name": "com.example.rsp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBkkP9vhhP3psVKOjcJRqe_YRyPR9RPFV8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
