@@ -85,4 +85,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'limeapp-34c6f.firebasestorage.app',
     measurementId: 'G-NR9CVEM07X',
   );
+
 }

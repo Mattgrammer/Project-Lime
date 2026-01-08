@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 
-class AboutPage extends StatelessWidget {
-  const AboutPage({super.key});
+class TeacherAboutPage extends StatelessWidget {
+  const TeacherAboutPage({super.key});
 
   @override
   Widget build(BuildContext context) {
