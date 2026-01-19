@@ -1,6 +1,6 @@
 {
-    "name": "rsp",
-    "short_name": "rsp",
+    "name": "LIME",
+    "short_name": "LIME",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

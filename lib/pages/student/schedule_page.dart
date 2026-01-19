@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 
 class SchedulePage extends StatefulWidget {
-  const SchedulePage({super.key});
+  final Stream<QuerySnapshot>? sectionsStream;
+  const SchedulePage({super.key, this.sectionsStream});
 
   @override
   State<SchedulePage> createState() => _SchedulePageState();
@@ -14,75 +16,77 @@ class _SchedulePageState extends State<SchedulePage> {
   bool _isLoading = true;
   List<Map<String, dynamic>> _scheduleItems = [];
 
+  StreamSubscription? _sectionsSub;
+
   @override
   void initState() {
     super.initState();
-    _loadSchedule();
+    _initListener();
+  }
+
+  @override
+  void dispose() {
+    _sectionsSub?.cancel();
+    super.dispose();
+  }
+
+  void _initListener() {
+    if (widget.sectionsStream != null) {
+      _sectionsSub = widget.sectionsStream!.listen((snapshot) {
+        _processSchedule(snapshot);
+      });
+    } else {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      _sectionsSub = FirebaseFirestore.instance
+          .collection('sections')
+          .where('studentUids', arrayContains: user.uid)
+          .snapshots()
+          .listen((snapshot) {
+        _processSchedule(snapshot);
+      });
+    }
+  }
+
+  void _processSchedule(QuerySnapshot snapshot) {
+    if (!mounted) return;
+    List<Map<String, dynamic>> allItems = [];
+
+    for (var doc in snapshot.docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data?['schedule'] is List) {
+        final List<dynamic> schedList = data!['schedule'];
+        for (final item in schedList) {
+          if (item is Map<String, dynamic>) {
+            allItems.add({
+              ...item,
+              'section': doc.id,
+            });
+          }
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _scheduleItems = allItems;
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _loadSchedule() async {
-    setState(() => _isLoading = true);
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        setState(() => _isLoading = false);
-        return;
-      }
+    // Stream handles updates
+  }
 
-      // Live listener for student document to get enrolled sections
-      FirebaseFirestore.instance
-          .collection('students')
-          .doc(user.uid)
-          .snapshots()
-          .listen((studentDoc) async {
-        if (!studentDoc.exists) return;
-
-        final studentData = studentDoc.data();
-        if (studentData == null) return;
-
-        final sections = List<String>.from(studentData['sections'] ?? []);
-
-        List<Map<String, dynamic>> allItems = [];
-
-        // For each section, fetch the schedule.
-        // Improvements: We could use a group query or listen to each section for real-time schedule updates.
-        // For now, let's just fetch them whenever the student doc updates or on init.
-        // To make schedule items real-time too, we would need a stream for each section.
-        
-        for (final sectionName in sections) {
-          try {
-             final sectionDoc = await FirebaseFirestore.instance.collection('sections').doc(sectionName).get();
-             if (sectionDoc.exists && sectionDoc.data() != null) {
-               final data = sectionDoc.data()!;
-               if (data['schedule'] is List) {
-                 final List<dynamic> schedList = data['schedule'];
-                 for (final item in schedList) {
-                   if (item is Map<String, dynamic>) {
-                     allItems.add({
-                       ...item,
-                       'section': sectionName,
-                     });
-                   }
-                 }
-               }
-             }
-          } catch (e) {
-            debugPrint('Error fetching schedule for section $sectionName: $e');
-          }
-        }
-
-        if (mounted) {
-          setState(() {
-            _scheduleItems = allItems;
-            _isLoading = false;
-          });
-        }
-      });
-      
-    } catch (e) {
-      debugPrint('Error loading schedule: $e');
-      if (mounted) setState(() => _isLoading = false);
+  // Group entries by subject+section+semester
+  Map<String, List<Map<String, dynamic>>> _groupSchedule(List<Map<String, dynamic>> items) {
+    final Map<String, List<Map<String, dynamic>>> grouped = {};
+    for (var entry in items) {
+      final key = '${entry['subject']}|${entry['section']}|${entry['teacherName']}';
+      grouped.putIfAbsent(key, () => []).add(entry);
     }
+    return grouped;
   }
 
   @override
@@ -95,49 +99,54 @@ class _SchedulePageState extends State<SchedulePage> {
 
     return DefaultTabController(
       length: 2,
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        appBar: PreferredSize(
-          preferredSize: const Size.fromHeight(110),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: Text(
-                  'Class Schedule',
-                  style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: HexColor("#0F4C7F"),
+      child: Column(
+        children: [
+          PreferredSize(
+            preferredSize: const Size.fromHeight(110),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  child: Text(
+                    'Class Schedule',
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: HexColor("#116754"),
+                    ),
                   ),
                 ),
-              ),
-              TabBar(
-                isScrollable: false,
-                indicatorColor: HexColor("#0F4C7F"),
-                labelColor: HexColor("#0F4C7F"),
-                unselectedLabelColor: Colors.grey,
-                tabs: const [
-                  Tab(text: '1st Semester'),
-                  Tab(text: '2nd Semester'),
-                ],
-              ),
-            ],
+                TabBar(
+                  isScrollable: false,
+                  indicatorColor: HexColor("#116754"),
+                  labelColor: HexColor("#116754"),
+                  unselectedLabelColor: Colors.grey,
+                  tabs: const [
+                    Tab(text: '1st Semester'),
+                    Tab(text: '2nd Semester'),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
-        body: TabBarView(
-          children: [
-            _buildScheduleList(firstSemSchedule),
-            _buildScheduleList(secondSemSchedule),
-          ],
-        ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _buildScheduleList(firstSemSchedule),
+                _buildScheduleList(secondSemSchedule),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildScheduleList(List<Map<String, dynamic>> items) {
-    if (items.isEmpty) {
+    final grouped = _groupSchedule(items);
+    
+    if (grouped.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(40),
@@ -164,24 +173,25 @@ class _SchedulePageState extends State<SchedulePage> {
       onRefresh: _loadSchedule,
       child: ListView.builder(
         padding: const EdgeInsets.all(16),
-        itemCount: items.length,
+        itemCount: grouped.length,
         itemBuilder: (context, index) {
-          final item = items[index];
+          final entry = grouped.entries.elementAt(index);
+          final parts = entry.key.split('|');
+          final subject = parts[0];
+          final section = parts[1];
+          final teacher = parts.length > 2 ? parts[2] : 'TBA';
+          final timeSlots = entry.value;
+          
           return Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: _buildScheduleCard(
-              item['time'] ?? 'TBA',
-              item['subject'] ?? 'Unknown Subject',
-              item['section'] ?? '',
-              item['teacherName'] ?? 'TBA',
-            ),
+            child: _buildScheduleCard(subject, section, teacher, timeSlots),
           );
         },
       ),
     );
   }
 
-  Widget _buildScheduleCard(String time, String subject, String section, String teacher) {
+  Widget _buildScheduleCard(String subject, String section, String teacher, List<Map<String, dynamic>> timeSlots) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -197,16 +207,17 @@ class _SchedulePageState extends State<SchedulePage> {
         ],
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: HexColor("#0F4C7F").withValues(alpha: 0.1),
+              color: HexColor("#116754").withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              Icons.access_time,
-              color: HexColor("#0F4C7F"),
+              Icons.book,
+              color: HexColor("#116754"),
             ),
           ),
           const SizedBox(width: 16),
@@ -223,21 +234,30 @@ class _SchedulePageState extends State<SchedulePage> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  time,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[800],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                 Text(
                   '$section • $teacher',
                   style: TextStyle(
                     fontSize: 13,
                     color: Colors.grey[600],
                   ),
                 ),
+                const SizedBox(height: 8),
+                ...timeSlots.map((slot) => Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    children: [
+                      Icon(Icons.schedule, size: 16, color: HexColor("#116754")),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${slot['day'] ?? ''} ${slot['time'] ?? 'TBA'}',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: HexColor("#116754"),
+                        ),
+                      ),
+                    ],
+                  ),
+                )),
               ],
             ),
           ),

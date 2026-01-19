@@ -3,14 +3,23 @@ import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../widgets/guide_pointer.dart';
+
 class TeacherInboxPage extends StatefulWidget {
   const TeacherInboxPage({super.key});
 
   @override
-  State<TeacherInboxPage> createState() => _TeacherInboxPageState();
+  State<TeacherInboxPage> createState() => TeacherInboxPageState();
 }
 
-class _TeacherInboxPageState extends State<TeacherInboxPage> {
+class TeacherInboxPageState extends State<TeacherInboxPage> {
+
+  @override
+  void dispose() {
+    GuidePointer.dismiss();
+    super.dispose();
+  }
+
 
   Stream<List<InboxMessage>> _inboxStream() {
     final user = FirebaseAuth.instance.currentUser;
@@ -219,106 +228,111 @@ class _TeacherInboxPageState extends State<TeacherInboxPage> {
             final messages = snapshot.data ?? [];
             final unreadCount = messages.where((m) => !m.read).length;
 
-            return SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              child: Padding(
-                padding: EdgeInsets.all(isMobile ? 16 : 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Inbox',
-                                style: TextStyle(
-                                  fontSize: isMobile ? 28 : 32,
-                                  fontWeight: FontWeight.bold,
-                                  color: HexColor("#0F4C7F"),
+            return Container(
+              color: Colors.grey[50],
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Padding(
+                  padding: EdgeInsets.all(isMobile ? 16 : 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (!isMobile) ...[
+                                  Text(
+                                    'Inbox',
+                                    style: TextStyle(
+                                      fontSize: isMobile ? 28 : 32,
+                                      fontWeight: FontWeight.bold,
+                                      color: HexColor("#116754"),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                ],
+                                Text(
+                                  unreadCount == 0
+                                      ? 'No unread messages'
+                                      : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.grey[600],
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                unreadCount == 0
-                                    ? 'No unread messages'
-                                    : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey[600],
+                              ],
+                            ),
+                          ),
+                              if (messages.isNotEmpty)
+                                Row(
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: _clearAll,
+                                      icon: const Icon(Icons.clear_all, size: 18),
+                                      label: const Text('Clear All'),
+                                      style: TextButton.styleFrom(
+                                        foregroundColor: HexColor("#116754"),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (messages.isNotEmpty)
-                          Row(
-                            children: [
-                              TextButton.icon(
-                                onPressed: _clearAll,
-                                icon: const Icon(Icons.clear_all, size: 18),
-                                label: const Text('Clear All'),
-                                style: TextButton.styleFrom(
-                                  foregroundColor: HexColor("#0F4C7F"),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+    
+                      if (messages.isEmpty)
+                        SizedBox(
+                          height: constraints.maxHeight * 0.6,
+                          child: Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.inbox,
+                                  size: 80,
+                                  color: Colors.grey[400],
                                 ),
-                              ),
-                            ],
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-
-                    if (messages.isEmpty)
-                      SizedBox(
-                        height: constraints.maxHeight * 0.6,
-                        child: Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.inbox,
-                                size: 80,
-                                color: Colors.grey[400],
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No messages',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  color: Colors.grey[600],
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No messages',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    color: Colors.grey[600],
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                      )
-                    else
-                      if (isDesktop)
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            crossAxisSpacing: 16,
-                            mainAxisSpacing: 12,
-                            mainAxisExtent: 180, // Approximate height for message cards
-                          ),
-                          itemCount: messages.length,
-                          itemBuilder: (context, index) => _buildMessageCard(messages[index], index),
                         )
                       else
-                        ...messages.asMap().entries.map((entry) {
-                          final index = entry.key;
-                          final message = entry.value;
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _buildMessageCard(message, index),
-                          );
-                        }),
-                  ],
+                        if (isDesktop)
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 2,
+                              crossAxisSpacing: 16,
+                              mainAxisSpacing: 12,
+                              mainAxisExtent: 180, // Approximate height for message cards
+                            ),
+                            itemCount: messages.length,
+                            itemBuilder: (context, index) => _buildMessageCard(messages[index], index),
+                          )
+                        else
+                          ...messages.asMap().entries.map((entry) {
+                            final index = entry.key;
+                            final message = entry.value;
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _buildMessageCard(message, index),
+                            );
+                          }),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -338,11 +352,11 @@ class _TeacherInboxPageState extends State<TeacherInboxPage> {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: isUnread ? HexColor("#0F4C7F").withValues(alpha: 0.05) : Colors.white,
+          color: isUnread ? HexColor("#116754").withValues(alpha: 0.05) : Colors.white,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isUnread
-                ? HexColor("#0F4C7F").withValues(alpha: 0.2)
+                ? HexColor("#116754").withValues(alpha: 0.2)
                 : Colors.grey[300]!,
             width: isUnread ? 2 : 1,
           ),
@@ -362,10 +376,10 @@ class _TeacherInboxPageState extends State<TeacherInboxPage> {
               children: [
                 CircleAvatar(
                   radius: 20,
-                  backgroundColor: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                   child: Icon(
                     isJoinRequest ? Icons.person_add : Icons.notifications,
-                    color: HexColor("#0F4C7F"),
+                    color: HexColor("#116754"),
                     size: 20,
                   ),
                 ),
@@ -436,7 +450,7 @@ class _TeacherInboxPageState extends State<TeacherInboxPage> {
                   ElevatedButton(
                     onPressed: () => _handleJoinRequest(message, true),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: HexColor("#0F4C7F"),
+                      backgroundColor: HexColor("#116754"),
                       foregroundColor: Colors.white,
                     ),
                     child: const Text('Accept'),

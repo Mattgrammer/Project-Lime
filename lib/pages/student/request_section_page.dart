@@ -284,115 +284,98 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        final isMobile = width <= 600;
-        final isDesktop = width > 900;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Request Section'),
+        backgroundColor: HexColor("#116754"),
+        foregroundColor: Colors.white,
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final isMobile = width <= 600;
+          final isDesktop = width > 900;
 
-        return RefreshIndicator(
-          onRefresh: _loadData,
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            child: Padding(
-              padding: EdgeInsets.all(isMobile ? 16 : 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Request to Join Section',
-                          style: TextStyle(
-                            fontSize: isMobile ? 28 : 32,
-                            fontWeight: FontWeight.bold,
-                            color: HexColor("#0F4C7F"),
+          return RefreshIndicator(
+            onRefresh: _loadData,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: Padding(
+                padding: EdgeInsets.all(isMobile ? 16 : 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Title Row removed as it's now in AppBar
+                    Text(
+                      'Search and request to join an adviser\'s section',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        hintText: 'Search sections...',
+                        prefixIcon: const Icon(Icons.search),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey[100],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    if (_filteredSections.isEmpty)
+                      Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(40),
+                          child: Column(
+                            children: [
+                              Icon(
+                                Icons.search_off,
+                                size: 80,
+                                color: Colors.grey[400],
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                _allSections.isEmpty
+                                    ? 'No sections available'
+                                    : 'No sections found',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  color: Colors.grey[600],
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                      IconButton(
-                        onPressed: () {
-                          setState(() => _isLoading = true);
-                          _loadData();
-                        },
-                        icon: const Icon(Icons.refresh),
-                        color: HexColor("#0F4C7F"),
-                        tooltip: 'Refresh Sections',
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Search and request to join an adviser\'s section',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search sections...',
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey[100],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  if (_filteredSections.isEmpty)
-                    Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(40),
-                        child: Column(
-                          children: [
-                            Icon(
-                              Icons.search_off,
-                              size: 80,
-                              color: Colors.grey[400],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              _allSections.isEmpty
-                                  ? 'No sections available'
-                                  : 'No sections found',
-                              style: TextStyle(
-                                fontSize: 18,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
+                      )
+                    else if (isDesktop)
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 12,
+                          mainAxisExtent: 100,
                         ),
+                        itemCount: _filteredSections.length,
+                        itemBuilder: (context, index) => _buildSectionItem(_filteredSections[index], width),
+                      )
+                    else
+                      Column(
+                        children: _filteredSections.map((section) => _buildSectionItem(section, width)).toList(),
                       ),
-                    )
-                  else if (isDesktop)
-                    GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        crossAxisSpacing: 16,
-                        mainAxisSpacing: 12,
-                        mainAxisExtent: 90,
-                      ),
-                      itemCount: _filteredSections.length,
-                      itemBuilder: (context, index) => _buildSectionItem(_filteredSections[index], width),
-                    )
-                  else
-                    Column(
-                      children: _filteredSections.map((section) => _buildSectionItem(section, width)).toList(),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -422,12 +405,12 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                color: HexColor("#116754").withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(
                 Icons.class_,
-                color: HexColor("#0F4C7F"),
+                color: HexColor("#116754"),
                 size: 24,
               ),
             ),
@@ -468,7 +451,7 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
               ElevatedButton(
                 onPressed: () => _sendRequest(section, screenWidth),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: HexColor("#0F4C7F"),
+                  backgroundColor: HexColor("#116754"),
                   foregroundColor: Colors.white,
                 ),
                 child: const Text('Request'),

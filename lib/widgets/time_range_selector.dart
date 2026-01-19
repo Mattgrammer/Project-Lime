@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
+import 'guide_pointer.dart';
 
 class TimeRangeSelector extends StatefulWidget {
   final String label;
   final String initialValue;
   final ValueChanged<String> onTimeChanged;
+  final Key? containerKey;
 
   const TimeRangeSelector({
     super.key,
     required this.label,
     required this.initialValue,
     required this.onTimeChanged,
+    this.containerKey,
   });
 
   @override
@@ -27,13 +30,18 @@ class _TimeRangeSelectorState extends State<TimeRangeSelector> {
   }
 
   Future<void> _selectTimeRange() async {
+    GuidePointer.toggle(false);
+    
     final TimeOfDay? startTime = await showTimePicker(
       context: context,
       initialTime: const TimeOfDay(hour: 8, minute: 0),
       helpText: 'SELECT START TIME',
     );
 
-    if (startTime == null) return;
+    if (startTime == null) {
+      GuidePointer.toggle(true);
+      return;
+    }
 
     if (!mounted) return;
 
@@ -43,7 +51,12 @@ class _TimeRangeSelectorState extends State<TimeRangeSelector> {
       helpText: 'SELECT END TIME',
     );
 
-    if (endTime == null) return;
+    if (endTime == null) {
+      GuidePointer.toggle(true);
+      return;
+    }
+    
+    GuidePointer.toggle(true);
     
     if (!mounted) return;
 
@@ -57,6 +70,7 @@ class _TimeRangeSelectorState extends State<TimeRangeSelector> {
   @override
   Widget build(BuildContext context) {
     return InkWell(
+      key: widget.containerKey,
       onTap: _selectTimeRange,
       borderRadius: BorderRadius.circular(8),
       child: InputDecorator(
@@ -64,7 +78,7 @@ class _TimeRangeSelectorState extends State<TimeRangeSelector> {
           labelText: widget.label,
           border: const OutlineInputBorder(),
           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          suffixIcon: Icon(Icons.access_time, color: HexColor("#0F4C7F")),
+          suffixIcon: Icon(Icons.access_time, color: HexColor("#116754")),
         ),
         child: Text(
           _currentTime.isEmpty ? 'Select Time Range' : _currentTime,

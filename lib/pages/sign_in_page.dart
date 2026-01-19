@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
-import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
+
 import 'package:window_manager/window_manager.dart';
 import 'sign_up_page.dart';
 
@@ -8,6 +9,8 @@ import 'profile_router.dart';
 
 // Firebase imports
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:lime/services/notification_service.dart';
+import 'package:lime/services/connectivity_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -88,6 +91,13 @@ class _SignInPageState extends State<SignInPage> {
       return;
     }
 
+    // Check internet connection before attempting sign in
+    final connectivityService = ConnectivityService();
+    if (!connectivityService.isOnline) {
+      _showSnackBar('Sorry, you don\'t have internet connection. Please check your network and try again.');
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
@@ -99,12 +109,21 @@ class _SignInPageState extends State<SignInPage> {
 
       // Navigate to home on success
       if (mounted) {
+        // Trigger welcome notification
+        NotificationService.showNotification(
+          id: 0,
+          title: 'Welcome Back!',
+          body: 'You have successfully signed in to LIME.',
+        );
         Navigator.pushReplacementNamed(context, '/home');
       }
     } on FirebaseAuthException catch (e) {
       String message = 'An error occurred';
 
-      if (e.code == 'user-not-found') {
+      // Check for network-related errors
+      if (e.code == 'network-request-failed' || e.code == 'too-many-requests') {
+        message = 'Sorry, you don\'t have internet connection. Please check your network and try again.';
+      } else if (e.code == 'user-not-found') {
         message = 'No user found with this email';
       } else if (e.code == 'wrong-password') {
         message = 'Wrong password';
@@ -112,15 +131,19 @@ class _SignInPageState extends State<SignInPage> {
         message = 'Invalid email address';
       } else if (e.code == 'user-disabled') {
         message = 'This account has been disabled';
-      } else if (e.code == 'too-many-requests') {
-        message = 'Too many attempts. Please try again later';
       } else if (e.code == 'invalid-credential') {
         message = 'Invalid email or password';
       }
 
       _showSnackBar(message);
     } catch (e) {
-      _showSnackBar('An unexpected error occurred');
+      // Check if it's a network error
+      final errorString = e.toString().toLowerCase();
+      if (errorString.contains('network') || errorString.contains('socket') || errorString.contains('connection')) {
+        _showSnackBar('Sorry, you don\'t have internet connection. Please check your network and try again.');
+      } else {
+        _showSnackBar('An unexpected error occurred');
+      }
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -212,180 +235,214 @@ class _SignInPageState extends State<SignInPage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final screenWidth = constraints.maxWidth;
+
+
+        // Responsive scaling factors
+        final isDesktop = screenWidth >= 1100;
+        final isTablet = screenWidth >= 600 && screenWidth < 1100;
+        final isMobile = screenWidth < 600;
+
+        // Vertical scaling factor - tuned for a more compact height
         final screenHeight = constraints.maxHeight;
+        final verticalScale = (screenHeight / 950).clamp(0.65, 1.0);
 
-        final isDesktop = screenWidth > 900;
-        final isTablet = screenWidth > 600 && screenWidth <= 900;
-        final isMobile = screenWidth <= 600;
+        // Dynamic width based on a percentage of screen with clamps
+        double maxWidth;
+        if (isMobile) {
+          maxWidth = double.infinity;
+        } else if (isTablet) {
+          maxWidth = (screenWidth * 0.65).clamp(400.0, 480.0);
+        } else {
+          maxWidth = (screenWidth * 0.4).clamp(440.0, 480.0); // Slightly slimmer
+        }
 
-        // Responsive values
-        final maxWidth = isDesktop ? 440.0 : isTablet ? 420.0 : double.infinity;
-        final horizontalPadding = isDesktop ? 24.0 : isTablet ? 20.0 : 16.0;
-        final verticalPadding = isDesktop ? 32.0 : isTablet ? 28.0 : 24.0;
-        final headerFontSize = isDesktop ? 36.0 : isTablet ? 34.0 : 28.0;
-        final welcomeFontSize = isDesktop ? 40.0 : isTablet ? 36.0 : 28.0;
-        final subtitleFontSize = isDesktop ? 16.0 : isTablet ? 15.0 : 14.0;
-        final buttonHeight = isDesktop ? 56.0 : isTablet ? 54.0 : 50.0;
-        final imageHeight = isDesktop ? 160.0 : isTablet ? 150.0 : 120.0;
-        final borderRadius = isDesktop ? 24.0 : isTablet ? 20.0 : 16.0;
-        final contentPaddingHorizontal = isDesktop ? 40.0 : isTablet ? 32.0 : 24.0;
-        final contentPaddingVertical = isDesktop ? 32.0 : isTablet ? 28.0 : 24.0;
-        final shadowBlur = isDesktop ? 40.0 : isTablet ? 30.0 : 20.0;
-        final shadowOffset = isDesktop ? 20.0 : isTablet ? 15.0 : 10.0;
-        final shadowAlpha = isDesktop ? 0.12 : isTablet ? 0.1 : 0.08;
+        final containerPadding = isMobile ? 0.0 : 24.0;
+        final headerFontSize = (isDesktop ? 34.0 : isTablet ? 30.0 : 28.0) * verticalScale;
+        final welcomeFontSize = (isDesktop ? 30.0 : isTablet ? 26.0 : 34.0) * verticalScale;
+        final subtitleFontSize = (isDesktop ? 17.0 : isTablet ? 16.0 : 22.0) * verticalScale;
+        final buttonHeight = (isDesktop ? 52.0 : isTablet ? 48.0 : 44.0) * verticalScale;
+        final borderRadius = isMobile ? 20.0 : 28.0; // More premium rounding
+        
+        // Header padding scales aggressively with height
+        final verticalPadding = (isDesktop ? 22.0 : isTablet ? 18.0 : 16.0) * verticalScale;
+        
+        // Shadow scaling - more depth
+
+        // Content scaling
+        final imageHeight = (isDesktop ? 160.0 : isTablet ? 140.0 : 250.0) * verticalScale;
+        final iconSize = (isDesktop ? 20.0 : isTablet ? 19.0 : 18.0) * verticalScale;
+        final contentPaddingHorizontal = isMobile ? 24.0 : (maxWidth * 0.1).clamp(32.0, 56.0);
+        final contentPaddingVertical = (isMobile ? 24.0 : 32.0) * verticalScale;
+        final interSpacing = (isDesktop ? 24.0 : isTablet ? 20.0 : 16.0) * verticalScale;
+
+
 
         return Scaffold(
-          body: Container(
-            width: screenWidth,
-            height: screenHeight,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  HexColor("#2a7925"),
-                  HexColor("#abad23"),
-                ],
+          backgroundColor: isMobile ? Colors.white : null,
+          appBar: isMobile
+              ? AppBar(
+                  title: Text('Sign In', style: GoogleFonts.merriweather(fontWeight: FontWeight.bold)),
+                  backgroundColor: HexColor("#116754"),
+                  foregroundColor: Colors.white,
+                  centerTitle: true,
+                  elevation: 0,
+                )
+              : null,
+          body: Stack(
+            children: [
+              // 1. Base Gradient
+              Container(
+                width: double.infinity,
+                height: double.infinity,
+                decoration: isMobile 
+                    ? null 
+                    : BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            HexColor("#2a7925"),
+                            HexColor("#abad23"),
+                          ],
+                        ),
+                      ),
               ),
-            ),
-            child: Center(
-              child: Focus(
-                focusNode: _focusNode,
-                autofocus: true,
-                onKeyEvent: (node, event) {
-                  final double scrollDelta = 100.0;
-                  if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                    _scrollController.animateTo(
-                      (_scrollController.offset + scrollDelta).clamp(0, _scrollController.position.maxScrollExtent),
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.linear,
-                    );
-                    return KeyEventResult.handled;
-                  } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                    _scrollController.animateTo(
-                      (_scrollController.offset - scrollDelta).clamp(0, _scrollController.position.maxScrollExtent),
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.linear,
-                    );
-                    return KeyEventResult.handled;
-                  } else if (event.logicalKey == LogicalKeyboardKey.pageDown) {
-                    _scrollController.animateTo(
-                      (_scrollController.offset + 400).clamp(0, _scrollController.position.maxScrollExtent),
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeOut,
-                    );
-                    return KeyEventResult.handled;
-                  } else if (event.logicalKey == LogicalKeyboardKey.pageUp) {
-                    _scrollController.animateTo(
-                      (_scrollController.offset - 400).clamp(0, _scrollController.position.maxScrollExtent),
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeOut,
-                    );
-                    return KeyEventResult.handled;
-                  }
-                  return KeyEventResult.ignored;
-                },
-                child: SingleChildScrollView(
-                  controller: _scrollController,
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal: horizontalPadding,
-                      vertical: isDesktop ? 20 : 16,
-                    ),
-                    child: Container(
-                      constraints: BoxConstraints(
-                        maxWidth: maxWidth,
-                        minHeight: isMobile ? screenHeight * 0.6 : screenHeight * 0.8,
+
+              // 2. Decorative Blobs
+              if (!isMobile)
+                Positioned.fill(
+                  child: Stack(
+                    children: [
+                      Positioned(
+                        top: -100,
+                        left: -50,
+                        child: _buildBlob(screenWidth * 0.4, HexColor("#abad23").withValues(alpha: 0.4)),
                       ),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(borderRadius),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: shadowAlpha),
-                            blurRadius: shadowBlur,
-                            offset: Offset(0, shadowOffset),
-                          ),
-                        ],
+                      Positioned(
+                        bottom: -150,
+                        right: -100,
+                        child: _buildBlob(screenWidth * 0.45, HexColor("#116754").withValues(alpha: 0.4)),
                       ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Header
-                          Container(
-                            width: double.infinity,
-                            padding: EdgeInsets.symmetric(vertical: verticalPadding),
-                            decoration: BoxDecoration(
-                              color: HexColor("#116754"),
-                              borderRadius: BorderRadius.only(
-                                topLeft: Radius.circular(borderRadius),
-                                topRight: Radius.circular(borderRadius),
-                              ),
-                            ),
-                            child: Text(
-                              'Sign In',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
+                    ],
+                  ),
+                ),
+
+              // 3. Content
+              Center(
+                child: Focus(
+                  focusNode: _focusNode,
+                  autofocus: true,
+                  onKeyEvent: (node, event) {
+                     // ... handle scroll
+                     return KeyEventResult.ignored;
+                  },
+                  child: SingleChildScrollView(
+                    controller: _scrollController,
+                    padding: isMobile ? EdgeInsets.zero : const EdgeInsets.symmetric(vertical: 24),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: containerPadding,
+                        vertical: 0, 
+                      ),
+                      child: Container(
+                        constraints: BoxConstraints(
+                          maxWidth: maxWidth,
+                          minHeight: 0, 
+                        ),
+                        decoration: isMobile 
+                            ? null 
+                            : BoxDecoration(
                                 color: Colors.white,
-                                fontSize: headerFontSize,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
+                                borderRadius: BorderRadius.circular(borderRadius),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.08),
+                                    blurRadius: 60,
+                                    offset: const Offset(0, 15),
+                                  ),
+                                ],
                               ),
-                            ),
-                          ),
-
-                          // Content
-                          Padding(
-                            padding: EdgeInsets.fromLTRB(
-                              contentPaddingHorizontal,
-                              contentPaddingVertical,
-                              contentPaddingHorizontal,
-                              contentPaddingVertical,
-                            ),
-                            child: Column(
-                              children: [
-                                // Image asset placeholder
-                                Image.asset(
-                                  'lib/pages/assets/LIME ASSETS/limelogo.png',
-                                  height: imageHeight,
-                                  width: isDesktop ? 200 : isTablet ? 180 : 140,
-                                  fit: BoxFit.contain,
+                        clipBehavior: isMobile ? Clip.none : Clip.antiAlias, // Fix for rounded corners
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Header (Desktop/Tablet only)
+                            if (!isMobile)
+                              Container(
+                                width: double.infinity,
+                                padding: EdgeInsets.symmetric(vertical: verticalPadding),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      HexColor("#116754"),
+                                      HexColor("#1a8a6f"),
+                                    ],
+                                  ),
                                 ),
-                                SizedBox(height: isDesktop ? 24 : isTablet ? 20 : 16),
-
-                                // Welcome text
-                                Text(
-                                  'Welcome Back!',
-                                  style: TextStyle(
-                                    color: HexColor("#116754"),
-                                    fontSize: welcomeFontSize,
+                                child: Text(
+                                  'Sign In',
+                                  textAlign: TextAlign.center,
+                                  style: GoogleFonts.merriweather(
+                                    color: Colors.white,
+                                    fontSize: headerFontSize,
                                     fontWeight: FontWeight.bold,
-                                    height: 1.2,
+                                    letterSpacing: 0.5,
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                                SizedBox(height: isDesktop ? 12 : isTablet ? 10 : 8),
-                                Text(
-                                  'Sign in to your Lime Account',
-                                  style: TextStyle(
-                                    color: const Color(0xFF666666),
-                                    fontSize: subtitleFontSize,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                                SizedBox(height: isDesktop ? 48 : isTablet ? 40 : 32),
+                              ),
 
-                                // Email field
-                                TextField(
-                                  controller: _emailController,
-                                  enabled: !_isLoading,
-                                  decoration: InputDecoration(
-                                    prefixIcon: Icon(
-                                      Icons.email,
+                            // Content
+                            Padding(
+                              padding: EdgeInsets.fromLTRB(
+                                contentPaddingHorizontal,
+                                contentPaddingVertical * 1.2, // Slightly more top room
+                                contentPaddingHorizontal,
+                                contentPaddingVertical,
+                              ),
+                              child: Column(
+                                children: [
+                                  // Full Logo branding
+                                  Image.asset(
+                                    'lib/pages/assets/LIME ASSETS/lime.png',
+                                    height: imageHeight,
+                                    width: isDesktop ? 240 : isTablet ? 210 : 320,
+                                    fit: BoxFit.contain,
+                                  ),
+                                  SizedBox(height: interSpacing),
+
+                                  // Welcome text
+                                  Text(
+                                    'Welcome Back!',
+                                    style: GoogleFonts.dmSerifText(
                                       color: HexColor("#116754"),
-                                      size: isDesktop ? 24 : isTablet ? 22 : 20,
+                                      fontSize: welcomeFontSize,
+                                      fontWeight: FontWeight.bold,
+                                      height: 1.2,
                                     ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  SizedBox(height: interSpacing * 0.4),
+                                  Text(
+                                    'Sign in to your Lime Account',
+                                    style: TextStyle(
+                                      color: const Color(0xFF666666),
+                                      fontSize: subtitleFontSize,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  SizedBox(height: interSpacing * 1.5),
+
+                                  // Email field
+                                  TextField(
+                                    controller: _emailController,
+                                    enabled: !_isLoading,
+                                    decoration: InputDecoration(
+                                      prefixIcon: Icon(
+                                        Icons.email,
+                                        color: HexColor("#116754"),
+                                        size: iconSize,
+                                      ),
                                     hintText: 'Email',
                                     hintStyle: TextStyle(
                                       color: const Color(0xFFAAAAAA),
@@ -394,21 +451,21 @@ class _SignInPageState extends State<SignInPage> {
                                     filled: true,
                                     fillColor: Colors.grey[50],
                                     border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(16),
+                                      borderRadius: BorderRadius.circular(borderRadius),
                                       borderSide: BorderSide(
                                         color: Colors.grey[300]!,
                                         width: 1.5,
                                       ),
                                     ),
                                     enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(16),
+                                      borderRadius: BorderRadius.circular(borderRadius),
                                       borderSide: BorderSide(
                                         color: Colors.grey[300]!,
                                         width: 1.5,
                                       ),
                                     ),
                                     focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(16),
+                                      borderRadius: BorderRadius.circular(borderRadius),
                                       borderSide: BorderSide(
                                         color: HexColor("#116754"),
                                         width: 2,
@@ -416,14 +473,14 @@ class _SignInPageState extends State<SignInPage> {
                                     ),
                                     contentPadding: EdgeInsets.symmetric(
                                       horizontal: 16,
-                                      vertical: isDesktop ? 16 : isTablet ? 14 : 12,
+                                      vertical: (isDesktop ? 16 : isTablet ? 14 : 12) * verticalScale,
                                     ),
                                   ),
                                   style: TextStyle(
-                                    fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+                                    fontSize: (isDesktop ? 16 : isTablet ? 15 : 14) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                   ),
                                 ),
-                                SizedBox(height: isDesktop ? 24 : isTablet ? 20 : 16),
+                                SizedBox(height: interSpacing * 0.7),
 
                                 // Password field
                                 TextField(
@@ -442,18 +499,18 @@ class _SignInPageState extends State<SignInPage> {
                                             ? Icons.lock_open
                                             : Icons.lock,
                                         color: HexColor("#116754"),
-                                        size: isDesktop ? 24 : isTablet ? 22 : 20,
+                                        size: iconSize,
                                       ),
                                     ),
                                     hintText: 'Password',
                                     hintStyle: TextStyle(
                                       color: const Color(0xFFAAAAAA),
-                                      fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+                                      fontSize: (isDesktop ? 16 : isTablet ? 15 : 14) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                     ),
                                     filled: true,
                                     fillColor: Colors.grey[50],
                                     border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(16),
+                                      borderRadius: BorderRadius.circular(borderRadius),
                                       borderSide: BorderSide(
                                         color: Colors.grey[300]!,
                                         width: 1.5,
@@ -475,14 +532,14 @@ class _SignInPageState extends State<SignInPage> {
                                     ),
                                     contentPadding: EdgeInsets.symmetric(
                                       horizontal: 16,
-                                      vertical: isDesktop ? 16 : isTablet ? 14 : 12,
+                                      vertical: (isDesktop ? 16 : isTablet ? 14 : 12) * verticalScale,
                                     ),
                                   ),
                                   style: TextStyle(
-                                    fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+                                    fontSize: (isDesktop ? 16 : isTablet ? 15 : 14) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                   ),
                                 ),
-                                SizedBox(height: isDesktop ? 12 : isTablet ? 10 : 8),
+                                SizedBox(height: interSpacing * 0.3),
                                 
                                 // Forgot Password link
                                 Align(
@@ -493,14 +550,14 @@ class _SignInPageState extends State<SignInPage> {
                                       'Forgot Password?',
                                       style: TextStyle(
                                         color: HexColor("#116754"),
-                                        fontSize: isDesktop ? 15 : isTablet ? 14 : 13,
+                                        fontSize: (isDesktop ? 15 : isTablet ? 14 : 13) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                         fontWeight: FontWeight.w600,
                                       ),
                                     ),
                                   ),
                                 ),
                                 
-                                SizedBox(height: isDesktop ? 24 : isTablet ? 20 : 16),
+                                SizedBox(height: interSpacing * 0.7),
 
                                 // Sign In button
                                 SizedBox(
@@ -527,7 +584,7 @@ class _SignInPageState extends State<SignInPage> {
                                         : Text(
                                       'Sign In',
                                       style: TextStyle(
-                                        fontSize: isDesktop ? 18 : isTablet ? 17 : 16,
+                                        fontSize: (isDesktop ? 18 : isTablet ? 17 : 16) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                         fontWeight: FontWeight.bold,
                                         color: Colors.white,
                                         letterSpacing: 0.3,
@@ -535,7 +592,7 @@ class _SignInPageState extends State<SignInPage> {
                                     ),
                                   ),
                                 ),
-                                SizedBox(height: isDesktop ? 32 : isTablet ? 28 : 24),
+                                SizedBox(height: interSpacing * 1.0),
 
                                 // Sign up link
                                 Wrap(
@@ -545,7 +602,7 @@ class _SignInPageState extends State<SignInPage> {
                                       "Don't have an account?  ",
                                       style: TextStyle(
                                         color: const Color(0xFF666666),
-                                        fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+                                        fontSize: (isDesktop ? 16 : isTablet ? 15 : 14) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                         fontWeight: FontWeight.w500,
                                       ),
                                     ),
@@ -564,7 +621,7 @@ class _SignInPageState extends State<SignInPage> {
                                         'Sign Up',
                                         style: TextStyle(
                                           color: HexColor("#116754"),
-                                          fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+                                          fontSize: (isDesktop ? 16 : isTablet ? 15 : 14) * (verticalScale > 1.0 ? 1.0 : verticalScale),
                                           fontWeight: FontWeight.bold,
                                           decoration: TextDecoration.underline,
                                           decorationColor: HexColor("#116754"),
@@ -583,9 +640,26 @@ class _SignInPageState extends State<SignInPage> {
                 ),
               ),
             ),
+            ],
           ),
         );
       },
+    );
+  }
+
+  Widget _buildBlob(double size, Color color) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [
+            color,
+            color.withValues(alpha: 0.0),
+          ],
+        ),
+      ),
     );
   }
 }

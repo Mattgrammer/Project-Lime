@@ -170,6 +170,11 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Unassigned Students'),
+        backgroundColor: HexColor("#116754"),
+        foregroundColor: Colors.white,
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -179,20 +184,11 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Unassigned Students',
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: HexColor("#0F4C7F"),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
+                      const Text(
                         'Search and assign students to your sections',
                         style: TextStyle(
                           fontSize: 16,
-                          color: Colors.grey[600],
+                          color: Colors.grey,
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -262,10 +258,10 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                                 child: Row(
                                   children: [
                                     CircleAvatar(
-                                      backgroundColor: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                                       child: Icon(
                                         Icons.person,
-                                        color: HexColor("#0F4C7F"),
+                                        color: HexColor("#116754"),
                                       ),
                                     ),
                                     const SizedBox(width: 16),
@@ -298,7 +294,7 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                                       icon: const Icon(Icons.add),
                                       label: const Text('Assign'),
                                       style: ElevatedButton.styleFrom(
-                                        backgroundColor: HexColor("#0F4C7F"),
+                                        backgroundColor: HexColor("#116754"),
                                         foregroundColor: Colors.white,
                                       ),
                                     ),

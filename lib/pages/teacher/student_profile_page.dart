@@ -3,6 +3,7 @@ import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../models/student.dart';
+import '../../widgets/guide_pointer.dart';
 
 class StudentProfilePage extends StatefulWidget {
   final Student student;
@@ -16,7 +17,10 @@ class StudentProfilePage extends StatefulWidget {
     this.sectionName,
     required this.onUpdate,
     this.onAddSubject,
+    this.startGradeTour = false,
   });
+
+  final bool startGradeTour;
 
   @override
   State<StudentProfilePage> createState() => _StudentProfilePageState();
@@ -43,10 +47,79 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
     _grades = Map<String, Map<String, double>>.from(
       widget.student.grades.map((k, v) => MapEntry(k, Map<String, double>.from(v)))
     );
+
     _loadPermissions();
+
+
+  }
+
+  final GlobalKey _demoGradeCellKey = GlobalKey();
+  final GlobalKey _gpaKey = GlobalKey();
+
+  void _startGradeTour() {
+    GuidePointer.show(
+      context,
+      steps: [
+        GuideStep(
+           targetKey: _demoGradeCellKey,
+           title: "Step 2: The Grade Table",
+           content: "This is the grade sheet. Subjects are grouped by semester, and you can see quarterly grades and averages here.",
+           buttonLabel: "Got it! Next Tip",
+           isBlocking: true, // NEW: Prevent clicking the cell during the info tip
+        ),
+        GuideStep(
+          targetKey: _demoGradeCellKey,
+          title: "Step 3: Try Entering a Grade",
+          content: "Go ahead and try it! Tap this highlighted cell to open the grade entry dialog. The tour will advance automatically.",
+          isBlocking: false,
+        ),
+        GuideStep(
+           targetKey: _gpaKey,
+           title: "Step 4: Real-time Averages",
+           content: "Notice how the GPA updates automatically as soon as you save a grade. Perfect for tracking performance!",
+           isBlocking: false,
+        ),
+        GuideStep(
+           targetKey: _demoGradeCellKey,
+           title: "Step 5: Subject Teacher Limits",
+           content: "Final Tip: As a Subject Teacher, you can ONLY edit grades for your assigned subjects (Math & Science here). Others remain read-only.",
+           buttonLabel: "Finish Tour",
+           isBlocking: false,
+        ),
+      ],
+      totalStepsOverride: 5,
+      initialStepOffset: 1,
+      onComplete: () {},
+    );
   }
 
   Future<void> _loadPermissions() async {
+    // Demo Mode Bypass
+    if (widget.startGradeTour) {
+      if (mounted) {
+        setState(() {
+          // SUBJECT TEACHER DEMO: Only Math and Science are editable
+          _isAdviser = false;
+          _mySubjects = {
+            'Math_1', 'Science_1',  // Only these are editable!
+            'Math_2', 'Science_2',
+          };
+          _allSubjects = ['Math', 'Science', 'English', 'Filipino', 'History', 'PE', 'Arts', 'Values'];
+          _subjectSemesters = {
+            'Math': 1, 'Science': 1, 'English': 1, 'Filipino': 1, 'History': 1, 'PE': 1, 'Arts': 1, 'Values': 1
+          }; 
+          // Note: Subject Teacher demo - only Math & Science editable, rest read-only.
+          _isLoadingPermissions = false;
+        });
+        
+        // Fix: Trigger tour after UI updates with demo data
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _startGradeTour();
+        });
+      }
+      return;
+    }
+
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -60,7 +133,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
         final schedule = data['schedule'] as List<dynamic>? ?? [];
 
         final myUid = user.uid;
-        final mySubs = <String>{};
+        final mySubs = <String>{}; // subject_semester
         final subjects = <String>{};
         final subSems = <String, int>{};
         
@@ -68,11 +141,15 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
           if (item is Map<String, dynamic>) {
             final sub = item['subject'] as String?;
             final sem = item['semester'] as int? ?? 1;
+            final tUid = item['teacherUid'] as String?;
+            
             if (sub != null) {
               subjects.add(sub);
               subSems[sub] = sem;
-              if (item['teacherUid'] == myUid) {
-                mySubs.add(sub);
+              final key = '${sub}_$sem';
+              
+              if (tUid == myUid) {
+                mySubs.add(key);
               }
             }
           }
@@ -94,12 +171,19 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
     }
   }
 
-  bool _canEditSubject(String subject) {
-    return _isAdviser || _mySubjects.contains(subject);
+  bool _canEditSubject(String subject, String quarter) {
+    // Determine semester from quarter
+    int semester = (quarter == 'q1' || quarter == 'q2') ? 1 : 2;
+    final key = '${subject}_$semester';
+    
+    // Both advisers and subject teachers must be assigned to the subject in the correct semester
+    if (_mySubjects.contains(key)) return true;
+    
+    return false;
   }
 
   void _showEditGradeDialog(String subject, String quarter) {
-    if (!_canEditSubject(subject)) {
+    if (!_canEditSubject(subject, quarter)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('You can only edit grades for subjects you teach')),
       );
@@ -128,18 +212,18 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: TextStyle(color: HexColor("#116754"), fontWeight: FontWeight.bold)),
           ),
           if (currentGrade != null && currentGrade > 0)
             TextButton(
               onPressed: () {
                 setState(() {
-                  _grades[subject]?[quarter] = 0;
+                  _grades[subject]?.remove(quarter);
                 });
                 widget.onUpdate(subject, quarter, null);
                 Navigator.pop(context);
               },
-              child: const Text('Clear', style: TextStyle(color: Colors.red)),
+              child: const Text('Clear', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
             ),
           ElevatedButton(
             onPressed: () {
@@ -157,8 +241,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                 );
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: HexColor("#0F4C7F")),
-            child: const Text('Save'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: HexColor("#116754"),
+              foregroundColor: Colors.white, // Ensure white text
+            ),
+            child: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -201,7 +288,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
 
   Widget _buildGPABadge(String label, double? gpa, {bool isPrimary = false}) {
     if (gpa == null) return const SizedBox.shrink();
-    final color = isPrimary ? HexColor("#0F4C7F") : Colors.grey[700]!;
+    final color = isPrimary ? HexColor("#116754") : Colors.grey[700]!;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
@@ -224,15 +311,31 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
   Widget build(BuildContext context) {
     final overallAvg = _calculateOverallAverage();
     
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.student.name),
-        backgroundColor: HexColor("#0F4C7F"),
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: _isLoadingPermissions 
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+
+
+        return Scaffold(
+          backgroundColor: Colors.white,
+          appBar: AppBar(
+            backgroundColor: HexColor("#116754"),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            title: Text(
+              widget.student.name,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            centerTitle: true,
+          ),
+          body: Column(
+            children: [
+            Expanded(
+              child: _isLoadingPermissions 
+                  ? const Center(child: CircularProgressIndicator())
+                  : SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -257,11 +360,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   children: [
                     CircleAvatar(
                       radius: 40,
-                      backgroundColor: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                       child: Icon(
                         Icons.person,
                         size: 40,
-                        color: HexColor("#0F4C7F"),
+                        color: HexColor("#116754"),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -275,6 +378,8 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                               fontSize: 24,
                               fontWeight: FontWeight.bold,
                             ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           if (widget.student.studentId.isNotEmpty) ...[
                             const SizedBox(height: 4),
@@ -296,15 +401,16 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                           ),
                           if (overallAvg != null) ...[
                             const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 4,
-                              children: [
-                                _buildGPABadge('Sem 1', _calculateOverallAverage(semester: 1)),
-                                _buildGPABadge('Sem 2', _calculateOverallAverage(semester: 2)),
-                                _buildGPABadge('Final', overallAvg, isPrimary: true),
-                              ],
-                            ),
+                                Wrap(
+                                  key: _gpaKey,
+                                  spacing: 8,
+                                  runSpacing: 4,
+                                  children: [
+                                    _buildGPABadge('Sem 1', _calculateOverallAverage(semester: 1)),
+                                    _buildGPABadge('Sem 2', _calculateOverallAverage(semester: 2)),
+                                    _buildGPABadge('Final', overallAvg, isPrimary: true),
+                                  ],
+                                ),
                           ],
                         ],
                       ),
@@ -320,17 +426,41 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                 style: TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
-                  color: HexColor("#0F4C7F"),
+                  color: HexColor("#116754"),
                 ),
               ),
               const SizedBox(height: 8),
-              Text(
-                _isAdviser 
-                    ? 'Tap any cell to edit grades' 
-                    : _mySubjects.isNotEmpty 
-                        ? 'Tap cells in your subjects to edit grades'
-                        : 'View-only mode',
-                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: (_isAdviser || _mySubjects.isNotEmpty) 
+                      ? HexColor("#116754").withValues(alpha: 0.05) 
+                      : Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      (_isAdviser || _mySubjects.isNotEmpty) ? Icons.edit_note : Icons.visibility_outlined,
+                      size: 20,
+                      color: (_isAdviser || _mySubjects.isNotEmpty) ? HexColor("#116754") : Colors.grey,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _isAdviser 
+                          ? 'Tap any cell to add or edit grades' 
+                          : _mySubjects.isNotEmpty 
+                              ? 'Tap highlighted cells to manage grades'
+                              : 'View-only mode: grades cannot be edited',
+                      style: TextStyle(
+                        color: (_isAdviser || _mySubjects.isNotEmpty) ? HexColor("#116754") : Colors.grey[600],
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               
@@ -369,9 +499,9 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                             width: double.infinity,
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
-                              color: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                              color: HexColor("#116754").withValues(alpha: 0.1),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: HexColor("#0F4C7F").withValues(alpha: 0.2)),
+                              border: Border.all(color: HexColor("#116754").withValues(alpha: 0.2)),
                             ),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -380,7 +510,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                                   'OVERALL FINAL AVERAGE',
                                   style: TextStyle(
                                     fontWeight: FontWeight.bold,
-                                    color: HexColor("#0F4C7F"),
+                                    color: HexColor("#116754"),
                                     letterSpacing: 1.2,
                                   ),
                                 ),
@@ -389,7 +519,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                                   style: TextStyle(
                                     fontSize: 20,
                                     fontWeight: FontWeight.bold,
-                                    color: HexColor("#0F4C7F"),
+                                    color: HexColor("#116754"),
                                   ),
                                 ),
                               ],
@@ -403,6 +533,11 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
           ),
         ),
       ),
+            ),
+          ],
+          ),
+        );
+      },
     );
   }
 
@@ -418,7 +553,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.calendar_today, size: 18, color: HexColor("#0F4C7F")),
+              Icon(Icons.calendar_today, size: 18, color: HexColor("#116754")),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -426,15 +561,15 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
-                    color: HexColor("#0F4C7F"),
+                    color: HexColor("#116754"),
                     letterSpacing: 1.1,
                   ),
                 ),
               ),
-              if (widget.onAddSubject != null)
+              if (widget.onAddSubject != null && _isAdviser)
                 IconButton(
                   icon: const Icon(Icons.add_circle, size: 24),
-                  color: HexColor("#0F4C7F"),
+                  color: HexColor("#116754"),
                   onPressed: widget.onAddSubject,
                   tooltip: 'Add Subject',
                 ),
@@ -463,7 +598,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                 child: Theme(
                   data: Theme.of(context).copyWith(
                     dataTableTheme: DataTableThemeData(
-                      headingRowColor: WidgetStateProperty.all(HexColor("#0F4C7F").withValues(alpha: 0.05)),
+                      headingRowColor: WidgetStateProperty.all(HexColor("#116754").withValues(alpha: 0.05)),
                       dataRowMinHeight: 56,
                       dataRowMaxHeight: 56,
                     ),
@@ -481,12 +616,28 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                           child: Text('Subject', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                         ),
                       ),
-                      DataColumn(label: Text('${quarterLabels['q${quarters[0]}']}', style: const TextStyle(fontWeight: FontWeight.bold))),
-                      DataColumn(label: Text('${quarterLabels['q${quarters[1]}']}', style: const TextStyle(fontWeight: FontWeight.bold))),
                       DataColumn(
-                        label: Text(
-                          'S$semesterNum Avg', 
-                          style: TextStyle(fontWeight: FontWeight.bold, color: HexColor("#1e824c")),
+                        label: Expanded(
+                          child: Center(
+                            child: Text('${quarterLabels['q${quarters[0]}']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ),
+                      DataColumn(
+                        label: Expanded(
+                          child: Center(
+                            child: Text('${quarterLabels['q${quarters[1]}']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ),
+                      DataColumn(
+                        label: Expanded(
+                          child: Center(
+                            child: Text(
+                              'S$semesterNum Avg', 
+                              style: TextStyle(fontWeight: FontWeight.bold, color: HexColor("#1e824c")),
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -494,7 +645,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                         .where((subject) => _subjectSemesters[subject] == semesterNum)
                         .map((subject) {
                       final semAvg = _calculateSubjectAverage(subject, semester: semesterNum);
-                      final canEdit = _canEditSubject(subject);
+                      final canEdit = _canEditSubject(subject, 'q${quarters[0]}'); // Permission is per-semester now, but check against a quarter within it
                       
                       return DataRow(
                         cells: [
@@ -511,11 +662,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                  if (canEdit)
-                                    Padding(
-                                      padding: const EdgeInsets.only(left: 6),
-                                      child: Icon(Icons.edit, size: 14, color: Colors.grey[400]),
-                                    ),
+                                  // Removed EDIT badge as per user request
                                 ],
                               ),
                             ),
@@ -540,23 +687,55 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
     final grade = _grades[subject]?[q];
     final hasGrade = grade != null && grade > 0;
     
+    // Attach key to Math Q1 for tour
+    final isDemoTarget = widget.startGradeTour && subject == 'Math' && q == 'q1';
+
     return DataCell(
-      InkWell(
-        onTap: canEdit ? () => _showEditGradeDialog(subject, q) : null,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: hasGrade 
-                ? _getGradeColor(grade).withValues(alpha: 0.1)
-                : Colors.grey[100],
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            hasGrade ? grade.toStringAsFixed(0) : '-',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: hasGrade ? FontWeight.bold : FontWeight.normal,
-              color: hasGrade ? _getGradeColor(grade) : Colors.grey[400],
+      Center(
+        child: InkWell(
+          key: isDemoTarget ? _demoGradeCellKey : null,
+          onTap: canEdit ? () => _showEditGradeDialog(subject, q) : null,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            constraints: const BoxConstraints(minWidth: 60),
+            decoration: BoxDecoration(
+              color: hasGrade 
+                  ? _getGradeColor(grade).withValues(alpha: 0.1)
+                  : (canEdit ? Colors.white : Colors.grey[50]),
+              borderRadius: BorderRadius.circular(8),
+              border: canEdit ? Border.all(
+                color: hasGrade 
+                  ? _getGradeColor(grade).withValues(alpha: 0.3)
+                  : HexColor("#116754").withValues(alpha: 0.3),
+                width: 1.5,
+              ) : null,
+              boxShadow: canEdit && !hasGrade ? [
+                BoxShadow(
+                  color: HexColor("#116754").withValues(alpha: 0.08),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                )
+              ] : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (canEdit && !hasGrade)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Icon(Icons.add_circle_outline, size: 14, color: HexColor("#116754")),
+                  ),
+                Text(
+                  hasGrade ? grade.toStringAsFixed(0) : (canEdit ? 'Add' : '-'),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: hasGrade ? FontWeight.bold : FontWeight.w700,
+                    color: hasGrade ? _getGradeColor(grade) : (canEdit ? HexColor("#116754") : Colors.grey[400]),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -566,21 +745,25 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
 
   DataCell _buildAvgCell(double? avg, {bool isFinal = false}) {
     return DataCell(
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: avg != null 
-              ? _getGradeColor(avg).withValues(alpha: isFinal ? 0.2 : 0.1)
-              : Colors.grey[200],
-          borderRadius: BorderRadius.circular(8),
-          border: isFinal ? Border.all(color: _getGradeColor(avg ?? 0).withValues(alpha: 0.3)) : null,
-        ),
-        child: Text(
-          avg != null ? avg.toStringAsFixed(2) : '-',
-          style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.bold,
-            color: avg != null ? _getGradeColor(avg) : Colors.grey[500],
+      Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          constraints: const BoxConstraints(minWidth: 60),
+          decoration: BoxDecoration(
+            color: avg != null 
+                ? _getGradeColor(avg).withValues(alpha: isFinal ? 0.2 : 0.1)
+                : Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+            border: isFinal ? Border.all(color: _getGradeColor(avg ?? 0).withValues(alpha: 0.3)) : null,
+          ),
+          child: Text(
+            avg != null ? avg.toStringAsFixed(2) : '-',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              color: avg != null ? _getGradeColor(avg) : Colors.grey[500],
+            ),
           ),
         ),
       ),

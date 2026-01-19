@@ -5,6 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 class UpdateDialog extends StatelessWidget {
   final String latestVersion;
+  final String currentVersion;
+  final int currentBuildNumber;
   final String releaseNotes;
   final String downloadUrl;
   final bool isEmergency;
@@ -12,6 +14,8 @@ class UpdateDialog extends StatelessWidget {
   const UpdateDialog({
     super.key,
     required this.latestVersion,
+    required this.currentVersion,
+    required this.currentBuildNumber,
     required this.releaseNotes,
     required this.downloadUrl,
     this.isEmergency = true,
@@ -95,21 +99,28 @@ class UpdateDialog extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               
-              // Version Badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                decoration: BoxDecoration(
-                  color: HexColor("#1e824c"),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  'Version $latestVersion',
-                  style: GoogleFonts.dmSerifText(
-                    fontSize: 14,
-                    color: Colors.white,
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: HexColor("#1e824c"),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'Version $latestVersion',
+                    style: GoogleFonts.dmSerifText(
+                      fontSize: 14,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                Text(
+                  'Current: $currentVersion ($currentBuildNumber)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[500],
+                  ),
+                ),
               const SizedBox(height: 20),
               
               // Release Notes

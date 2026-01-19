@@ -24,7 +24,16 @@ class UpdateChecker {
       }
 
       final data = config.data() as Map<String, dynamic>;
-      int latestBuildNumber = data['build_number'] ?? 0;
+      
+      // Safely parse build number (handle int or String)
+      var buildNumRaw = data['build_number'];
+      int latestBuildNumber = 0;
+      if (buildNumRaw is int) {
+        latestBuildNumber = buildNumRaw;
+      } else if (buildNumRaw is String) {
+        latestBuildNumber = int.tryParse(buildNumRaw) ?? 0;
+      }
+
       String latestVersion = data['latest_version'] ?? currentVersion;
       
       // Select the correct download URL based on the platform
@@ -38,9 +47,17 @@ class UpdateChecker {
       }
 
       String releaseNotes = data['release_notes'] ?? 'New version available!';
-      bool isEmergencyUpdate = data['is_emergency'] ?? true; 
+      
+      // Safely parse is_emergency
+      var emergencyRaw = data['is_emergency'];
+      bool isEmergencyUpdate = true; // Default to true if missing
+      if (emergencyRaw is bool) {
+        isEmergencyUpdate = emergencyRaw;
+      } else if (emergencyRaw is String) {
+         isEmergencyUpdate = emergencyRaw.toLowerCase() == 'true';
+      }
 
-      debugPrint('UpdateChecker: Local build: $currentBuildNumber, Remote build: $latestBuildNumber');
+      debugPrint('UpdateChecker: Local build: $currentBuildNumber, Remote build: $latestBuildNumber, Emergency: $isEmergencyUpdate');
 
       if (latestBuildNumber > currentBuildNumber) {
         // Show update dialog
@@ -50,6 +67,8 @@ class UpdateChecker {
             barrierDismissible: !isEmergencyUpdate, // If emergency, force the update
             builder: (context) => UpdateDialog(
               latestVersion: latestVersion,
+              currentVersion: currentVersion,
+              currentBuildNumber: currentBuildNumber,
               releaseNotes: releaseNotes,
               downloadUrl: downloadUrl,
               isEmergency: isEmergencyUpdate,

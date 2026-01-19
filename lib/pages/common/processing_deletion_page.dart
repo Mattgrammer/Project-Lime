@@ -26,7 +26,7 @@ class _ProcessingDeletionPageState extends State<ProcessingDeletionPage> {
       setState(() => _status = 'Stopping background services...');
       
       // Extended delay to ensure all dashboard streams are killed and platform channels clear
-      await Future.delayed(const Duration(milliseconds: 3000));
+      await Future.delayed(const Duration(milliseconds: 500));
 
       if (!mounted) return;
       setState(() => _status = 'Verifying security credentials...');
@@ -71,14 +71,14 @@ class _ProcessingDeletionPageState extends State<ProcessingDeletionPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             CircularProgressIndicator(
-              color: HexColor("#0F4C7F"),
+              color: HexColor("#116754"),
             ),
             const SizedBox(height: 24),
             Text(
               _status,
               style: TextStyle(
                 fontSize: 18,
-                color: HexColor("#0F4C7F"),
+                color: HexColor("#116754"),
                 fontWeight: FontWeight.w500,
               ),
             ),

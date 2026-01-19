@@ -110,9 +110,23 @@ class _ProfileRouterState extends State<ProfileRouter> {
   Widget build(BuildContext context) {
     if (_isLoading && _userType == null) {
       return Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(HexColor("#0F4C7F")),
+        body: Container(
+          width: double.infinity,
+          height: double.infinity,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                HexColor("#2a7925"),
+                HexColor("#abad23"),
+              ],
+            ),
+          ),
+          child: Center(
+            child: CircularProgressIndicator(
+              valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
           ),
         ),
       );
@@ -125,9 +139,18 @@ class _ProfileRouterState extends State<ProfileRouter> {
 
     if (_userType == 'Student') {
       return const ProfileStudentPage();
-    } else {
-      // Default to teacher profile page (which handles universal setup for new users)
+    } else if (_userType == 'Teacher') {
       return const ProfileTeacherPage();
+    } else {
+      // If we are here, something is wrong or still loading. 
+      // Do NOT default to setup if we haven't finished the refresh check.
+      return Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(HexColor("#116754")),
+          ),
+        ),
+      );
     }
   }
 }

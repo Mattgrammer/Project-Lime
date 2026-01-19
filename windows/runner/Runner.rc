@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "rsp" "\0"
+            VALUE "FileDescription", "LIME" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "rsp" "\0"
+            VALUE "InternalName", "LIME" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2025 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "rsp.exe" "\0"
-            VALUE "ProductName", "rsp" "\0"
+            VALUE "OriginalFilename", "LIME.exe" "\0"
+            VALUE "ProductName", "LIME" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

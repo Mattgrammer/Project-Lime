@@ -25,6 +25,10 @@ dependencies:
   package_info_plus: ^8.1.2
   url_launcher: ^6.3.1
   shared_preferences: ^2.2.0
+  flutter_local_notifications: ^17.1.2
+  image_cropper: ^8.0.0
+  flutter_image_compress: ^2.4.0
+  connectivity_plus: ^6.1.0
 
 
 
@@ -36,6 +40,14 @@ dev_dependencies:
 
   flutter_lints: ^6.0.0
   msix: ^3.16.1
+  flutter_launcher_icons: ^0.13.1
+  inno_bundle: ^0.11.2
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "lib/pages/assets/LIME ASSETS/lime.png"
+  min_sdk_android: 21
 
 
 flutter:
@@ -46,11 +58,23 @@ flutter:
     - lib/pages/assets/LIME ASSETS/limetransparent.png
     - lib/pages/assets/LIME ASSETS/limetransparent-2.png
     - lib/pages/assets/LIME ASSETS/lime.png
+    - lib/pages/assets/LIME ASSETS/lime_new.png
 
 msix_config:
   display_name: LIME
   publisher_display_name: Mattgrammer
   title: LIME
   identity_name: com.mattgrammer.lime
-  logo_path: lib/pages/assets/LIME ASSETS/limelogo.png
+  logo_path: lib/pages/assets/LIME ASSETS/lime.png
   capabilities: internetClient
+
+inno_bundle:
+  id: 17B49B8E-1C71-4E6F-A08D-2D6A5B4C3D1E
+  name: LIME
+  version: 1.0.0
+  publisher: Mattgrammer
+  executable: LIME.exe
+  icon: windows/runner/resources/app_icon.ico
+  admin: false
+  languages:
+    - english

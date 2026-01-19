@@ -127,7 +127,7 @@ class _InboxPageState extends State<InboxPage> {
                                 style: TextStyle(
                                   fontSize: isMobile ? 28 : 32,
                                   fontWeight: FontWeight.bold,
-                                  color: HexColor("#0F4C7F"),
+                                  color: HexColor("#116754"),
                                 ),
                               ),
                               const SizedBox(height: 4),
@@ -149,7 +149,7 @@ class _InboxPageState extends State<InboxPage> {
                             icon: const Icon(Icons.clear_all, size: 18),
                             label: const Text('Clear All'),
                             style: TextButton.styleFrom(
-                              foregroundColor: HexColor("#0F4C7F"),
+                              foregroundColor: HexColor("#116754"),
                             ),
                           ),
                       ],
@@ -253,11 +253,11 @@ class _InboxPageState extends State<InboxPage> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isUnread ? HexColor("#0F4C7F").withValues(alpha: 0.05) : Colors.white,
+        color: isUnread ? HexColor("#116754").withValues(alpha: 0.05) : Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isUnread
-              ? HexColor("#0F4C7F").withValues(alpha: 0.2)
+              ? HexColor("#116754").withValues(alpha: 0.2)
               : Colors.grey[300]!,
           width: isUnread ? 2 : 1,
         ),
@@ -277,10 +277,10 @@ class _InboxPageState extends State<InboxPage> {
             children: [
               CircleAvatar(
                 radius: 20,
-                backgroundColor: HexColor("#0F4C7F").withValues(alpha: 0.1),
+                backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                 child: Icon(
                   Icons.notifications,
-                  color: HexColor("#0F4C7F"),
+                  color: HexColor("#116754"),
                   size: 20,
                 ),
               ),

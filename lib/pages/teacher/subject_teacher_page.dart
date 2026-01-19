@@ -16,7 +16,8 @@ class _SubjectTeacherPageState extends State<SubjectTeacherPage> {
   String? _teacherType;
   List<String> _sections = [];
   List<String> _ownedSections = [];
-  final Map<String, List<Map<String, dynamic>>> _sectionStudents = {};
+
+  final Map<String, List<Map<String, dynamic>>> _teacherSubjects = {};
   bool _isLoading = true;
 
   @override
@@ -39,20 +40,22 @@ class _SubjectTeacherPageState extends State<SubjectTeacherPage> {
         _ownedSections = List<String>.from(data['ownedSections'] ?? []);
       }
 
-      // 2. For each assigned section, fetch students assigned to it
-      for (var section in _sections) {
-        final studentsSnapshot = await firestore
-            .collection('students')
-            .where('sections', arrayContains: section)
-            .get();
-        
-        final List<Map<String, dynamic>> students = [];
-        for (var doc in studentsSnapshot.docs) {
-          final sdata = doc.data();
-          sdata['uid'] = doc.id;
-          students.add(sdata);
+      // 2. For each section, fetch the schedule to find assigned subjects
+      for (var sectionName in _sections) {
+        final sectionDoc = await firestore.collection('sections').doc(sectionName).get();
+        if (sectionDoc.exists) {
+           final data = sectionDoc.data()!;
+           final List<dynamic> schedule = data['schedule'] ?? [];
+           
+           final List<Map<String, dynamic>> subjects = [];
+           for (var item in schedule) {
+             final entry = item as Map<String, dynamic>;
+             if (entry['teacherUid'] == widget.teacherUid) {
+                subjects.add(entry);
+             }
+           }
+           _teacherSubjects[sectionName] = subjects;
         }
-        _sectionStudents[section] = students;
       }
     } catch (e) {
       debugPrint('Error loading data from Firestore: $e');
@@ -61,136 +64,272 @@ class _SubjectTeacherPageState extends State<SubjectTeacherPage> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  Future<void> _removeSubjectGroup(String sectionName, String subject, int semester) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove Subject'),
+        content: Text('Are you sure you want to remove $subject from $sectionName? This will remove all scheduled times for this subject.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Cancel', style: TextStyle(color: HexColor("#116754"), fontWeight: FontWeight.bold))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            child: const Text('Remove', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final docRef = firestore.collection('sections').doc(sectionName);
+      
+      await firestore.runTransaction((transaction) async {
+        final snapshot = await transaction.get(docRef);
+        if (!snapshot.exists) return;
+
+        final startSchedule = List<Map<String, dynamic>>.from(
+          (snapshot.data()?['schedule'] as List<dynamic>? ?? []).map((e) => Map<String, dynamic>.from(e as Map))
+        );
+
+        startSchedule.removeWhere((s) => 
+            s['subject'] == subject && 
+            s['semester'] == semester && 
+            s['teacherUid'] == widget.teacherUid
+        );
+
+        transaction.update(docRef, {'schedule': startSchedule});
+      });
+
+      setState(() {
+         final currentList = _teacherSubjects[sectionName];
+         if (currentList != null) {
+            currentList.removeWhere((s) => s['subject'] == subject && s['semester'] == semester);
+         }
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Subject removed successfully')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error removing subject: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+           SnackBar(content: Text('Failed to remove subject: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.teacherName),
-        backgroundColor: HexColor('#0F4C7F'),
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.grey[300]!),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth <= 600;
+
+        return Scaffold(
+          backgroundColor: Colors.white,
+          body: Column(
+          children: [
+            Container(
+              padding: EdgeInsets.fromLTRB(8, isMobile ? 8 : 16, 16, 8),
+              color: Colors.white,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => Navigator.pop(context),
+                    color: HexColor("#116754"),
+                  ),
+                  Expanded(
+                    child: Text(
+                      widget.teacherName,
+                      style: TextStyle(
+                        fontSize: isMobile ? 24 : 32,
+                        fontWeight: FontWeight.bold,
+                        color: HexColor("#116754"),
                       ),
-                      child: Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 36,
-                            backgroundColor: HexColor('#0F4C7F').withValues(alpha: 0.1),
-                            child: Icon(Icons.person, color: HexColor('#0F4C7F')),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(widget.teacherName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 6),
-                                Text(_teacherType ?? 'Teacher', style: TextStyle(color: Colors.grey[700])),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 20),
-                    Text('Sections', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: HexColor('#0F4C7F'))),
-                    const SizedBox(height: 12),
-                    if (_sections.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Text('No sections found for this teacher.', style: TextStyle(color: Colors.grey[600])),
-                      )
-                    else
-                      ..._sections.map((section) {
-                        final isOwned = _ownedSections.contains(section);
-                        final students = _sectionStudents[section] ?? [];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: Colors.grey[300]!),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(section, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                                          const SizedBox(height: 4),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                            decoration: BoxDecoration(
-                                              color: (isOwned ? HexColor("#0F4C7F") : Colors.green).withValues(alpha: 0.1),
-                                              borderRadius: BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              isOwned ? 'Adviser' : 'Subject Teacher',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.bold,
-                                                color: isOwned ? HexColor("#0F4C7F") : Colors.green[700],
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Icon(Icons.arrow_forward_ios, size: 16, color: HexColor('#0F4C7F')),
-                                  ],
-                                ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : SingleChildScrollView(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.grey[300]!),
                               ),
-                              const SizedBox(height: 8),
-                              if (students.isEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  child: Text('No assigned students', style: TextStyle(color: Colors.grey[600])),
-                                )
-                              else
-                                ...students.map((stu) => Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                      child: Container(
+                              child: Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 36,
+                                    backgroundColor: HexColor('#116754').withValues(alpha: 0.1),
+                                    child: Icon(Icons.person, color: HexColor('#116754')),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(widget.teacherName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                                        const SizedBox(height: 6),
+                                        Text(_teacherType ?? 'Teacher', style: TextStyle(color: Colors.grey[700])),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Text('Sections', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: HexColor('#116754'))),
+                            const SizedBox(height: 12),
+                            if (_sections.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.all(20),
+                                child: Text('No sections found for this teacher.', style: TextStyle(color: Colors.grey[600])),
+                              )
+                            else
+                              ..._sections.map((section) {
+                                final isOwned = _ownedSections.contains(section);
+                                final subjects = _teacherSubjects[section] ?? [];
+                                
+                                final uniqueSubjects = <String, Map<String, dynamic>>{};
+                                for (var s in subjects) {
+                                  final name = s['subject'] as String? ?? 'Unknown';
+                                  final sem = s['semester'] as int? ?? 1;
+                                  final key = '${name}_$sem';
+                                  if (!uniqueSubjects.containsKey(key)) {
+                                     uniqueSubjects[key] = s;
+                                  }
+                                }
+                                final displaySubjects = uniqueSubjects.values.toList();
+
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Container(
                                         padding: const EdgeInsets.all(12),
                                         decoration: BoxDecoration(
                                           color: Colors.white,
                                           borderRadius: BorderRadius.circular(12),
-                                          border: Border.all(color: Colors.grey[200]!),
+                                          border: Border.all(color: Colors.grey[300]!),
                                         ),
                                         child: Row(
                                           children: [
-                                            Expanded(child: Text(stu['name'] ?? 'Unnamed', style: const TextStyle(fontSize: 15))),
-                                            Text(stu['studentId'] ?? '', style: TextStyle(color: Colors.grey[600])),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(section, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                                  const SizedBox(height: 4),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: (isOwned ? HexColor("#116754") : Colors.green).withValues(alpha: 0.1),
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      isOwned ? 'Adviser' : 'Subject Teacher',
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: isOwned ? HexColor("#116754") : Colors.green[700],
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            Icon(Icons.arrow_forward_ios, size: 16, color: HexColor('#116754')),
                                           ],
                                         ),
                                       ),
-                                    )),
-                            ],
-                          ),
-                        );
-                      }),
-                  ],
-                ),
-              ),
+                                      
+                                      if (displaySubjects.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'ASSIGNED SUBJECTS:',
+                                                style: TextStyle(
+                                                  fontSize: 12, 
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.grey[700],
+                                                ),
+                                              ),
+                                              const SizedBox(height: 6),
+                                              ...displaySubjects.map((entry) {
+                                                final subjName = entry['subject'] as String? ?? 'Unknown';
+                                                final sem = entry['semester'] as int? ?? 1;
+                                                return Padding(
+                                                  padding: const EdgeInsets.only(bottom: 4),
+                                                  child: Row(
+                                                      children: [
+                                                          Icon(Icons.book_outlined, size: 16, color: HexColor("#116754")), 
+                                                          const SizedBox(width: 8),
+                                                          Expanded(
+                                                            child: Text(
+                                                              '$subjName (Sem $sem)', 
+                                                              style: TextStyle(color: Colors.grey[800], fontSize: 14)
+                                                            ),
+                                                          ),
+                                                          if (!isOwned)
+                                                            IconButton(
+                                                              icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                                                              onPressed: () => _removeSubjectGroup(section, subjName, sem),
+                                                              tooltip: 'Remove Subject',
+                                                              padding: EdgeInsets.zero,
+                                                              constraints: const BoxConstraints(),
+                                                            ),
+                                                      ],
+                                                  ),
+                                                );
+                                              }),
+                                            ],
+                                          ),
+                                        )
+                                      else if (!isOwned)
+                                         Padding(
+                                           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                                           child: Text(
+                                             'No subjects assigned in this section', 
+                                             style: TextStyle(color: Colors.grey[500], fontStyle: FontStyle.italic, fontSize: 13)
+                                           ),
+                                         )
+                                    ],
+                                  ),
+                                );
+                              }),
+                          ],
+                        ),
+                      ),
+                    ),
             ),
+          ],
+        ), 
+      );
+    },
     );
   }
 }

@@ -64,7 +64,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '254821518092',
     projectId: 'limeapp-34c6f',
     storageBucket: 'limeapp-34c6f.firebasestorage.app',
-    iosBundleId: 'com.example.rsp',
+    iosBundleId: 'com.example.LIME',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
@@ -73,7 +73,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '254821518092',
     projectId: 'limeapp-34c6f',
     storageBucket: 'limeapp-34c6f.firebasestorage.app',
-    iosBundleId: 'com.example.rsp',
+    iosBundleId: 'com.example.LIME',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(

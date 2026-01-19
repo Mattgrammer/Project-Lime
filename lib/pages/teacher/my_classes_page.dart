@@ -1,78 +1,212 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'section_detail_page.dart';
+import 'package:lime/pages/teacher/section_detail_page.dart';
 
 class MyClassesPage extends StatefulWidget {
-  const MyClassesPage({super.key});
+  final Stream<List<DocumentSnapshot>>? sectionsStream;
+  const MyClassesPage({super.key, this.sectionsStream});
 
   @override
-  State<MyClassesPage> createState() => _MyClassesPageState();
+  State<MyClassesPage> createState() => MyClassesPageState();
 }
 
-class _MyClassesPageState extends State<MyClassesPage> {
+class MyClassesPageState extends State<MyClassesPage> {
+  StreamSubscription? _teacherSubscription;
+  StreamSubscription? _sectionsSubscription;
   List<String> _sections = [];
   List<String> _ownedSections = [];
   bool _isLoading = true;
   String? _teacherType;
   String? _teacherName;
+  
+  // Tour Keys
+  final GlobalKey _firstSectionKey = GlobalKey();
+  final GlobalKey _createButtonKey = GlobalKey();
+  
+  bool _isGradeTourActive = false;
+  bool _isDemoMode = false;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _listenToData();
+  }
+  
+  void startGradeTour() {
+    setState(() {
+      _isGradeTourActive = true;
+    });
+
+    // Directly open the Demo Class experience for everyone
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const SectionDetailPage(
+          sectionName: "Demo Class",
+          startGradeTour: true,
+        ),
+      ),
+    ).then((_) {
+      if (mounted) {
+        setState(() {
+          _isGradeTourActive = false;
+        });
+      }
+    });
   }
 
-  Future<void> _loadData() async {
+  void startClassesTour() {
+    // Load DEMO MODE: Create a fake section with dummy data for practice
+    setState(() {
+      _sections = ['Demo Section - Grade 10-A'];
+      _ownedSections = ['Demo Section - Grade 10-A'];
+      _teacherType = 'Adviser';
+      _teacherName = 'Demo Adviser';
+      _isDemoMode = true;
+      _isLoading = false;
+    });
+
+    // Navigate to the demo section after a short delay
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const SectionDetailPage(
+            sectionName: "Demo Section - Grade 10-A",
+            startClassesTour: true,
+          ),
+        ),
+      );
+    });
+  }
+
+  void startTeachersTour() {
+    // Load DEMO MODE: Create a fake section with dummy data for practice
+    setState(() {
+      _sections = ['Demo Section - Grade 10-A'];
+      _ownedSections = ['Demo Section - Grade 10-A'];
+      _teacherType = 'Adviser';
+      _teacherName = 'Demo Adviser';
+      _isDemoMode = true;
+      _isLoading = false;
+    });
+
+    // Navigate to the demo section
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const SectionDetailPage(
+            sectionName: "Demo Section - Grade 10-A",
+            startTeachersTour: true,
+          ),
+        ),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _teacherSubscription?.cancel();
+    _sectionsSubscription?.cancel();
+    super.dispose();
+  }
+
+
+
+  void resetTour() {
+    setState(() {
+      _isDemoMode = false;
+      _isLoading = true;
+    });
+    _listenToData();
+  }
+
+  void _listenToData() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    try {
-      final firestore = FirebaseFirestore.instance;
-      final doc = await firestore.collection('teachers').doc(user.uid).get();
-      if (doc.exists) {
-        final data = doc.data();
-        if (data != null) {
-          final sections = List<String>.from(data['sections'] ?? []);
-          List<String> ownedSections;
-          
-          if (data['ownedSections'] == null && (data['teacherType'] == 'Adviser')) {
-            // Migration: treat all current sections as owned
-            ownedSections = List<String>.from(sections);
-            await firestore.collection('teachers').doc(user.uid).update({
-              'ownedSections': ownedSections,
-            });
-            
-            // Also ensure sections documents exist with adviserUid
-            for (var sectionName in ownedSections) {
-              await firestore.collection('sections').doc(sectionName).set({
-                'adviserUid': user.uid,
-              }, SetOptions(merge: true));
-            }
-          } else {
-            ownedSections = List<String>.from(data['ownedSections'] ?? []);
-          }
+    final firestore = FirebaseFirestore.instance;
 
-          if (mounted) {
-            setState(() {
-              _teacherType = data['teacherType'] as String?;
-              _teacherName = data['name'] as String? ?? 'Teacher'; // Added _teacherName
-              _sections = sections;
-              _ownedSections = ownedSections;
-              _isLoading = false;
-            });
-          }
-          return;
+    _teacherSubscription?.cancel();
+    _teacherSubscription = firestore
+        .collection('teachers')
+        .doc(user.uid)
+        .snapshots()
+        .listen((doc) async {
+      if (!doc.exists || !mounted || _isDemoMode) return;
+      
+      final data = doc.data();
+      if (data == null) return;
+
+      final sections = List<String>.from(data['sections'] ?? []).toSet().toList();
+      List<String> ownedSections;
+      
+      if (data['ownedSections'] == null && (data['teacherType'] == 'Adviser')) {
+        // Migration: treat all current sections as owned
+        ownedSections = List<String>.from(sections);
+        await firestore.collection('teachers').doc(user.uid).update({
+          'ownedSections': ownedSections,
+        });
+        
+        // Also ensure sections documents exist with adviserUid and required fields
+        for (var sectionName in ownedSections) {
+          await firestore.collection('sections').doc(sectionName).set({
+            'adviserUid': user.uid,
+            'studentUids': FieldValue.arrayUnion([]), // Ensure field exists
+            'teacherUids': FieldValue.arrayUnion([]), // Ensure field exists
+          }, SetOptions(merge: true));
         }
+      } else {
+        ownedSections = List<String>.from(data['ownedSections'] ?? []);
       }
-    } catch (e) {
-      debugPrint('Error loading sections from Firestore: $e');
-    }
 
-    if (mounted) {
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _teacherType = data['teacherType'] as String?;
+          _teacherName = data['name'] as String? ?? 'Teacher';
+          _sections = sections;
+          _ownedSections = ownedSections;
+          _isLoading = false;
+        });
+      }
+    });
+
+    // Optimized sections listener
+    _sectionsSubscription?.cancel();
+    if (widget.sectionsStream != null) {
+      _sectionsSubscription = widget.sectionsStream!.listen((snapshots) {
+        _processSections(snapshots, user.uid);
+      });
+    } else {
+      _sectionsSubscription = firestore
+          .collection('sections')
+          .where('teacherUids', arrayContains: user.uid)
+          .snapshots()
+          .listen((snapshot) {
+        _processSections(snapshot.docs, user.uid);
+      });
     }
+  }
+
+  void _processSections(List<DocumentSnapshot> snapshots, String uid) {
+    if (!mounted || _isDemoMode) return;
+    
+    final List<String> sectionsFromQuery = snapshots.map((doc) => doc.id).toList();
+    final List<String> ownedFromQuery = snapshots
+        .where((doc) => (doc.data() as Map<String, dynamic>?)?['adviserUid'] == uid)
+        .map((doc) => doc.id)
+        .toList();
+
+    setState(() {
+      // Merge with existing lists but avoid duplicates
+      _sections = ( { ..._sections, ...sectionsFromQuery } ).toList();
+      _ownedSections = ( { ..._ownedSections, ...ownedFromQuery } ).toList();
+      _isLoading = false;
+    });
   }
 
   Future<void> _saveSections() async {
@@ -170,17 +304,30 @@ class _MyClassesPageState extends State<MyClassesPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Create New Section'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Section Name',
-            hintText: 'e.g., Grade 11 - STEM',
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Set a name for your class section. This will be used by students to find and join your class.',
+              style: TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Section Name',
+                hintText: 'e.g., Grade 11 - STEM',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold)),
           ),
           ElevatedButton(
             onPressed: () async {
@@ -264,9 +411,10 @@ class _MyClassesPageState extends State<MyClassesPage> {
                    return; // Stop creation
                 }
 
+                // Add to local state (for instant feedback, though listener will catch it too)
                 setState(() {
-                  _sections.add(sectionName);
-                  _ownedSections.add(sectionName);
+                  if (!_sections.contains(sectionName)) _sections.add(sectionName);
+                  if (!_ownedSections.contains(sectionName)) _ownedSections.add(sectionName);
                 });
                 await _saveSections();
                 
@@ -275,17 +423,28 @@ class _MyClassesPageState extends State<MyClassesPage> {
                   'adviserUid': user.uid,
                   'adviserName': _teacherName,
                   'studentUids': [],
+                  'teacherUids': [], // Fix: Ensure query filter works even if empty
                 }, SetOptions(merge: true));
 
                 if (context.mounted) {
                   Navigator.pop(context);
+                  // Auto-navigate to the new section
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => SectionDetailPage(sectionName: sectionName),
+                    ),
+                  );
                 }
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: HexColor("#0F4C7F"),
+              backgroundColor: HexColor("#116754"),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
-            child: const Text('Create'),
+            child: const Text('Create Section', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -302,7 +461,7 @@ class _MyClassesPageState extends State<MyClassesPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            child: Text('Cancel', style: TextStyle(color: HexColor("#116754"), fontWeight: FontWeight.bold)),
           ),
           ElevatedButton(
             onPressed: () async {
@@ -313,48 +472,43 @@ class _MyClassesPageState extends State<MyClassesPage> {
               });
               await _saveSections();
 
-              // 1. Fetch section data (schedule and studentUids) before deleting
+              // 1. Fetch section data (schedule) before deleting
               try {
                 final firestore = FirebaseFirestore.instance;
                 final sectionDoc = await firestore.collection('sections').doc(sectionToDelete).get();
                 
-                List<String> studentUids = [];
                 List<dynamic> schedule = [];
-                
                 if (sectionDoc.exists) {
-                  final data = sectionDoc.data()!;
-                  studentUids = List<String>.from(data['studentUids'] ?? []);
-                  schedule = data['schedule'] as List<dynamic>? ?? [];
+                  schedule = sectionDoc.data()?['schedule'] as List<dynamic>? ?? [];
                 }
 
                 final List<String> subjectsInRoom = schedule
                     .whereType<Map<String, dynamic>>()
-                    .map((item) => item['subject'] as String)
+                    .map((item) => (item['subject'] as String?) ?? '')
+                    .where((s) => s.isNotEmpty)
                     .toList();
 
-                final batch = firestore.batch();
-
-                // 2. Remove grades for subjects in this section from all students in studentUids
-                for (var studentUid in studentUids) {
-                  final updates = <String, dynamic>{};
-                  for (var subject in subjectsInRoom) {
-                    updates['grades.$subject'] = FieldValue.delete();
-                  }
-                  if (updates.isNotEmpty) {
-                    batch.update(firestore.collection('students').doc(studentUid), updates);
-                  }
-                }
-
-                // 3. Remove section name from any student who had it (fallback check)
+                // 2. Find all students enrolled in this section
                 final studentsWithSection = await firestore
                     .collection('students')
                     .where('sections', arrayContains: sectionToDelete)
                     .get();
 
+                final batch = firestore.batch();
+
+                // 3. Purge grades and remove section from all enrolled students
                 for (var doc in studentsWithSection.docs) {
-                  batch.update(doc.reference, {
-                    'sections': FieldValue.arrayRemove([sectionToDelete])
-                  });
+                  final updates = <String, dynamic>{};
+                  
+                  // Delete grades for subjects in this section
+                  for (var subject in subjectsInRoom) {
+                    updates['grades.$subject'] = FieldValue.delete();
+                  }
+                  
+                  // Remove section from student's sections list
+                  updates['sections'] = FieldValue.arrayRemove([sectionToDelete]);
+                  
+                  batch.update(doc.reference, updates);
                 }
 
                 // 4. Remove from all teachers' sections
@@ -373,7 +527,7 @@ class _MyClassesPageState extends State<MyClassesPage> {
                 batch.delete(firestore.collection('sections').doc(sectionToDelete));
 
                 await batch.commit();
-                debugPrint('Permanently deleted $sectionToDelete and purged associated data');
+                debugPrint('Permanently deleted $sectionToDelete and purged associated data for ${studentsWithSection.docs.length} students');
               } catch (e) {
                 debugPrint('Error during robust section deletion: $e');
               }
@@ -409,96 +563,102 @@ class _MyClassesPageState extends State<MyClassesPage> {
         final horizontalPadding = isMobile ? 16.0 : 24.0;
         final titleSize = isMobile ? 28.0 : 32.0;
 
-        return SingleChildScrollView(
-          child: Padding(
-            padding: EdgeInsets.all(horizontalPadding),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'My Classes',
-                            style: TextStyle(
-                              fontSize: titleSize,
-                              fontWeight: FontWeight.bold,
-                              color: HexColor("#0F4C7F"),
+        return Container(
+          color: Colors.grey[50],
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.all(horizontalPadding),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (!isMobile) ...[
+                              Text(
+                                'My Classes',
+                                style: TextStyle(
+                                  fontSize: titleSize,
+                                  fontWeight: FontWeight.bold,
+                                  color: HexColor("#116754"),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                            Text(
+                              isAdviser 
+                                  ? 'Manage your sections' 
+                                  : 'Manage your classes and students',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey[600],
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            isAdviser 
-                                ? 'Manage your sections' 
-                                : 'Manage your classes and students',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.grey[600],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (isAdviser)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 8.0),
-                        child: ElevatedButton.icon(
-                          onPressed: () => _showAddSectionDialog(width),
-                          icon: const Icon(Icons.add, size: 20),
-                          label: Text(isMobile ? 'Create' : 'Create Section'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: HexColor("#0F4C7F"),
-                            foregroundColor: Colors.white,
-                            padding: EdgeInsets.symmetric(
-                              horizontal: isMobile ? 12 : 20, 
-                              vertical: isMobile ? 8 : 12
-                            ),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
+                          ],
                         ),
                       ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-
-                if (_sections.isEmpty)
-                  _buildEmptyState(isAdviser)
-                else ...[
-                  if (_ownedSections.isNotEmpty) ...[
-                    Text(
-                      'My Sections (Adviser)',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: HexColor("#0F4C7F"),
+                      if (isAdviser)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 8.0),
+                          child: ElevatedButton.icon(
+                            key: _createButtonKey,
+                            onPressed: () => _showAddSectionDialog(width),
+                            icon: const Icon(Icons.add, size: 20),
+                            label: Text(isMobile ? 'Create' : 'Create Section'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: HexColor("#116754"),
+                              foregroundColor: Colors.white,
+                              padding: EdgeInsets.symmetric(
+                                horizontal: isMobile ? 12 : 20, 
+                                vertical: isMobile ? 8 : 12
+                              ),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+    
+                  if (_sections.isEmpty)
+                    _buildEmptyState(isAdviser)
+                  else ...[
+                    if (_ownedSections.isNotEmpty) ...[
+                      Text(
+                        'My Sections (Adviser)',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: HexColor("#116754"),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildSectionGrid(_ownedSections, isOwned: true, isDesktop: isDesktop),
-                    const SizedBox(height: 24),
-                  ],
-                  if (_sections.where((s) => !_ownedSections.contains(s)).isNotEmpty) ...[
-                    Text(
-                      'Assigned Classes (Subject Teacher)',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: HexColor("#0F4C7F"),
+                      const SizedBox(height: 16),
+                      _buildSectionGrid(_ownedSections, isOwned: true, isDesktop: isDesktop),
+                      const SizedBox(height: 24),
+                    ],
+                    if (_sections.where((s) => !_ownedSections.contains(s)).isNotEmpty) ...[
+                      Text(
+                        'Assigned Classes (Subject Teacher)',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: HexColor("#116754"),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    _buildSectionGrid(
-                      _sections.where((s) => !_ownedSections.contains(s)).toList(),
-                      isOwned: false,
-                      isDesktop: isDesktop
-                    ),
+                      const SizedBox(height: 16),
+                      _buildSectionGrid(
+                        _sections.where((s) => !_ownedSections.contains(s)).toList(),
+                        isOwned: false,
+                        isDesktop: isDesktop
+                      ),
+                    ],
                   ],
                 ],
-              ],
+              ),
             ),
           ),
         );
@@ -518,11 +678,21 @@ class _MyClassesPageState extends State<MyClassesPage> {
           mainAxisExtent: 120, // Fixed height for cards
         ),
         itemCount: sections.length,
-        itemBuilder: (context, index) => _buildSectionCard(sections[index], isOwned: isOwned),
+        itemBuilder: (context, index) => _buildSectionCard(
+          sections[index], 
+          isOwned: isOwned,
+          key: index == 0 ? _firstSectionKey : null,
+        ),
       );
     }
     return Column(
-      children: sections.map((section) => _buildSectionCard(section, isOwned: isOwned)).toList(),
+      children: sections.asMap().entries.map((entry) {
+        return _buildSectionCard(
+          entry.value, 
+          isOwned: isOwned,
+          key: entry.key == 0 ? _firstSectionKey : null,
+        );
+      }).toList(),
     );
   }
 
@@ -551,17 +721,28 @@ class _MyClassesPageState extends State<MyClassesPage> {
     );
   }
 
-  Widget _buildSectionCard(String section, {required bool isOwned}) {
+  Widget _buildSectionCard(String section, {required bool isOwned, Key? key}) {
     return Padding(
+      key: key,
       padding: const EdgeInsets.only(bottom: 16),
       child: InkWell(
         onTap: () {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => SectionDetailPage(sectionName: section),
+              builder: (context) => SectionDetailPage(
+                sectionName: section,
+                startGradeTour: _isGradeTourActive,
+                // If we are in global demo mode, we might want to propagate other flags here if needed
+              ),
             ),
-          );
+          ).then((_) {
+            if (mounted) {
+              setState(() {
+                _isGradeTourActive = false;
+              });
+            }
+          });
         },
         borderRadius: BorderRadius.circular(16),
         child: Container(
@@ -583,12 +764,12 @@ class _MyClassesPageState extends State<MyClassesPage> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: (isOwned ? HexColor("#0F4C7F") : Colors.green).withValues(alpha: 0.1),
+                  color: (isOwned ? HexColor("#116754") : Colors.green).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
                   isOwned ? Icons.class_ : Icons.school,
-                  color: isOwned ? HexColor("#0F4C7F") : Colors.green[700],
+                  color: isOwned ? HexColor("#116754") : Colors.green[700],
                   size: 32,
                 ),
               ),
@@ -612,7 +793,7 @@ class _MyClassesPageState extends State<MyClassesPage> {
                 ),
               Icon(
                 Icons.arrow_forward_ios,
-                color: HexColor("#0F4C7F"),
+                color: HexColor("#116754"),
                 size: 20,
               ),
             ],

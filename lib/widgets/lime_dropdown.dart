@@ -7,6 +7,7 @@ class LIMEDropdown<T> extends StatefulWidget {
   final List<DropdownMenuItem<T>> items;
   final ValueChanged<T?> onChanged;
   final Color? arrowColor;
+  final bool enabled;
 
   const LIMEDropdown({
     super.key,
@@ -15,6 +16,7 @@ class LIMEDropdown<T> extends StatefulWidget {
     required this.items,
     required this.onChanged,
     this.arrowColor,
+    this.enabled = true,
   });
 
   @override
@@ -96,8 +98,8 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
                           dense: true,
                           title: item.child,
                           selected: selected,
-                          selectedTileColor: HexColor("#0F4C7F").withValues(alpha: 0.05),
-                          trailing: selected ? Icon(Icons.check, size: 18, color: HexColor("#0F4C7F")) : null,
+                          selectedTileColor: HexColor("#116754").withValues(alpha: 0.05),
+                          trailing: selected ? Icon(Icons.check, size: 18, color: HexColor("#116754")) : null,
                           onTap: () {
                             widget.onChanged(item.value);
                             _removeEntry();
@@ -134,10 +136,11 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
       child: InkWell(
         key: _targetKey,
         borderRadius: BorderRadius.circular(8),
-        onTap: _toggle,
+        onTap: widget.enabled ? _toggle : null,
         child: InputDecorator(
           decoration: InputDecoration(
             labelText: widget.label,
+            enabled: widget.enabled,
             border: const OutlineInputBorder(),
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           ),
@@ -154,7 +157,7 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              Icon(Icons.arrow_drop_down, color: widget.arrowColor ?? HexColor("#0F4C7F")),
+              Icon(Icons.arrow_drop_down, color: widget.arrowColor ?? HexColor("#116754")),
             ],
           ),
         ),
