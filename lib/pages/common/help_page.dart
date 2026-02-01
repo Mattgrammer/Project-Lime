@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
+import '../../widgets/bug_report_dialog.dart';
 
 class HelpPage extends StatelessWidget {
   final String userType;
@@ -8,6 +9,7 @@ class HelpPage extends StatelessWidget {
   final VoidCallback? onStartClassesTour;
   final VoidCallback? onStartTeachersTour;
   final VoidCallback? onStartScheduleTour;
+  final VoidCallback? onStartInboxTour;
 
   const HelpPage({
     super.key, 
@@ -17,6 +19,7 @@ class HelpPage extends StatelessWidget {
     this.onStartClassesTour,
     this.onStartTeachersTour,
     this.onStartScheduleTour,
+    this.onStartInboxTour,
   });
 
   @override
@@ -97,11 +100,33 @@ class HelpPage extends StatelessWidget {
                 "Understand your daily timetable and class timings.",
                 Icons.schedule_outlined,
                 () {
-                  Navigator.of(context).popUntil((route) => route.isFirst);
+                  if (Navigator.of(context).canPop()) {
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  }
                   onStartScheduleTour?.call();
                 },
               ),
+
+
             
+            const SizedBox(height: 32),
+            const Divider(),
+            const SizedBox(height: 16),
+            _buildSectionHeader("Contact Support"),
+            const SizedBox(height: 16),
+            _buildTourCard(
+              context,
+              "Report a Bug",
+              "Encountered an issue? Let us know so we can fix it.",
+              Icons.bug_report_outlined,
+              () {
+                showDialog(
+                  context: context,
+                  builder: (context) => BugReportDialog(userType: userType),
+                );
+              },
+            ),
+
             const SizedBox(height: 40),
             Center(
               child: Text(
@@ -137,13 +162,13 @@ class HelpPage extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2)),
         ],
       ),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
         leading: Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(

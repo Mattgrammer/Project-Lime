@@ -9,6 +9,7 @@ class GuideStep {
   final String? buttonLabel;
   final bool hideButton;
   final bool isBlocking; // NEW: Whether to block taps outside the spotlight
+  final VoidCallback? onShow; // NEW: Callback when step is shown
 
   GuideStep({
     required this.targetKey,
@@ -17,6 +18,7 @@ class GuideStep {
     this.buttonLabel,
     this.hideButton = false,
     this.isBlocking = true,
+    this.onShow,
   });
 }
 
@@ -45,12 +47,18 @@ class GuidePointer extends StatefulWidget {
     int? totalStepsOverride,
     int initialStepOffset = 0,
   }) {
+    debugPrint('GUIDE: show() called with ${steps.length} steps');
     dismiss();
+    
+    // Use rootOverlay to ensure the guide is above everything (bottom bars, dialogs, etc.)
+    final overlay = Overlay.of(context, rootOverlay: true);
+    
     _currentOverlay = OverlayEntry(
       builder: (context) => GuidePointer(
         key: _globalKey,
         steps: steps,
         onComplete: () {
+          debugPrint('GUIDE: onComplete triggered');
           dismiss();
           onComplete();
         },
@@ -58,7 +66,8 @@ class GuidePointer extends StatefulWidget {
         initialStepOffset: initialStepOffset,
       ),
     );
-    Overlay.of(context).insert(_currentOverlay!);
+    overlay.insert(_currentOverlay!);
+    debugPrint('GUIDE: Overlay inserted into rootOverlay successfully');
   }
 
   static void next() {
@@ -98,8 +107,19 @@ class GuidePointer extends StatefulWidget {
   }
 
   static void dismiss() {
-    _currentOverlay?.remove();
-    _currentOverlay = null;
+    if (_currentOverlay != null) {
+      debugPrint('GUIDE: dismissing current overlay');
+      _currentOverlay?.remove();
+      _currentOverlay = null;
+    }
+  }
+
+  /// Dynamically update the current step's target to a new key
+  static void updateTarget(GlobalKey newKey) {
+    final state = _globalKey.currentState;
+    if (state != null) {
+      state._setTargetOverride(newKey);
+    }
   }
 
   @override
@@ -108,6 +128,9 @@ class GuidePointer extends StatefulWidget {
 
 class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMixin {
   int _currentStepIndex = 0;
+  
+  // Optional override for the target key (for dynamic spotlight)
+  GlobalKey? _targetKeyOverride;
   
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
@@ -122,6 +145,15 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
   late Animation<Rect?> _moveAnimation;
 
   Timer? _timer;
+
+  void _setTargetOverride(GlobalKey? key) {
+    if (mounted) {
+      setState(() {
+        _targetKeyOverride = key;
+      });
+      _updateTargetRect(immediate: true);
+    }
+  }
 
   @override
   void initState() {
@@ -153,6 +185,8 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateTargetRect(immediate: true);
       _startTracking();
+      // Call onShow for the very first step
+      widget.steps[_currentStepIndex].onShow?.call();
     });
   }
 
@@ -166,36 +200,72 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
     _timer = null;
   }
 
+  int _retryCount = 0;
+
   void _updateTargetRect({bool immediate = false}) {
     if (!mounted) return;
+    
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final RenderBox? overlayBox = overlay.context.findRenderObject() as RenderBox?;
+    if (overlayBox == null) return;
+
     final step = widget.steps[_currentStepIndex];
-    final box = step.targetKey.currentContext?.findRenderObject() as RenderBox?;
+    final targetKey = _targetKeyOverride ?? step.targetKey;
+    final box = targetKey.currentContext?.findRenderObject() as RenderBox?;
     
     if (box != null && box.hasSize) {
-      // Find position relative to the global Overlay
-      final position = box.localToGlobal(Offset.zero);
-      final size = box.size;
-      final newRect = Rect.fromLTWH(position.dx, position.dy, size.width, size.height);
-      
-      if (_targetRect != newRect) {
-        if (immediate || _targetRect == null) {
-          setState(() {
-            _targetRect = newRect;
-            _previousRect = newRect;
-          });
-        } else {
-          // Animate move
-          _previousRect = _targetRect;
-          _targetRect = newRect;
+      _retryCount = 0; // Reset retries on success
+      try {
+        final position = box.localToGlobal(Offset.zero, ancestor: overlayBox);
+        final size = box.size;
+        
+        if (size.width > 0 && size.height > 0) {
+          final newRect = Rect.fromLTWH(position.dx, position.dy, size.width, size.height);
           
-          _moveAnimation = RectTween(
-            begin: _previousRect,
-            end: _targetRect,
-          ).animate(CurvedAnimation(parent: _moveController, curve: Curves.easeInOut));
-          
-          _moveController.forward(from: 0);
+          if (_targetRect != newRect) {
+            debugPrint('GUIDE: Target found! Rect=$newRect, Step=$_currentStepIndex');
+            if (immediate || _targetRect == null) {
+              setState(() {
+                _targetRect = newRect;
+                _previousRect = newRect;
+              });
+            } else {
+              _previousRect = _targetRect;
+              _targetRect = newRect;
+              
+              _moveAnimation = RectTween(
+                begin: _previousRect,
+                end: _targetRect,
+              ).animate(CurvedAnimation(parent: _moveController, curve: Curves.easeInOut));
+              
+              _moveController.forward(from: 0);
+            }
+          }
         }
+      } catch (e) {
+        final position = box.localToGlobal(Offset.zero);
+        final size = box.size;
+        final newRect = Rect.fromLTWH(position.dx, position.dy, size.width, size.height);
+        setState(() {
+          _targetRect = newRect;
+          _previousRect = newRect;
+        });
       }
+    } else {
+       // Target missing: retry silently for up to 2 seconds
+       if (_retryCount < 20) {
+         _retryCount++;
+         debugPrint('GUIDE: Target NOT found for step $_currentStepIndex, retry $_retryCount/20...');
+         Future.delayed(const Duration(milliseconds: 100), () => _updateTargetRect());
+       } else {
+         // Truly missing after 2 seconds: clear highlight
+         if (_targetRect != null) {
+           debugPrint('GUIDE: Giving up on target for step $_currentStepIndex after 2s');
+           setState(() {
+             _targetRect = null;
+           });
+         }
+       }
     }
   }
 
@@ -214,9 +284,13 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
     if (_currentStepIndex < widget.steps.length - 1) {
       setState(() {
         _currentStepIndex++;
+        _targetKeyOverride = null;
+        _retryCount = 0; // Reset retry counter for new step
       });
       debugPrint('TOUR: Now on step $_currentStepIndex: ${widget.steps[_currentStepIndex].title}');
-      // Force immediate update for the new target
+      
+      widget.steps[_currentStepIndex].onShow?.call();
+      // Restore smooth animations by NOT using immediate: true
       _updateTargetRect();
     } else {
       debugPrint('TOUR: Last step reached, completing tour');
@@ -270,7 +344,26 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
         final screenHeight = MediaQuery.of(context).size.height;
 
         final step = widget.steps[_currentStepIndex];
-        bool isArrowUp = rect.top < screenHeight / 2;
+        // Check available safe space
+        final padding = MediaQuery.of(context).padding;
+        final double safeSpaceAbove = rect.top - padding.top;
+        final double safeSpaceBelow = screenHeight - rect.bottom - padding.bottom;
+        
+        const double requiredHeight = 120.0; // Reduced estimate to prevent aggressive bottom-snapping
+        
+        bool isArrowUp;
+        if (safeSpaceBelow >= requiredHeight && safeSpaceAbove < requiredHeight) {
+          isArrowUp = true; // Must go below
+        } else if (safeSpaceAbove >= requiredHeight && safeSpaceBelow < requiredHeight) {
+          isArrowUp = false; // Must go above
+        } else {
+          // Both fit or neither fit: pick the larger space
+          isArrowUp = safeSpaceBelow >= safeSpaceAbove;
+        }
+
+        // SAFETY: If BOTH spaces are too small (< requiredHeight), force center placement (ignoring rect for positioning)
+        // This ensures the text is always visible even if it overlaps the hole slightly.
+        final bool forceCenter = safeSpaceAbove < requiredHeight && safeSpaceBelow < requiredHeight;
 
         return Listener(
           onPointerDown: _handleGlobalTap,
@@ -279,13 +372,14 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
             children: [
               // 1. Dark Overlay with Spotlight
               IgnorePointer(
-                child: CustomPaint(
-                  size: Size(screenWidth, screenHeight),
-                  painter: SpotlightPainter(
-                    targetRect: currentDisplayRect ?? Rect.zero,
-                    isVisible: hasRect,
-                    pulseValue: _pulseAnimation.value,
-                    opacity: _fadeAnimation.value,
+                child: SizedBox.expand(
+                  child: CustomPaint(
+                    painter: SpotlightPainter(
+                      targetRect: currentDisplayRect ?? Rect.zero,
+                      isVisible: hasRect,
+                      pulseValue: _pulseAnimation.value,
+                      opacity: _fadeAnimation.value,
+                    ),
                   ),
                 ),
               ),
@@ -346,10 +440,15 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
                           ),
                         ),
+                      // Close button moved to right alignment in Row
                       IconButton(
                         icon: const Icon(Icons.close, color: Colors.white, size: 28),
                         onPressed: widget.onComplete,
-                        style: IconButton.styleFrom(backgroundColor: Colors.black45),
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.black45,
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(40, 40),
+                        ),
                       ),
                     ],
                   ),
@@ -358,26 +457,35 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
               ),
 
               // 4. Instruction Card
-              if (hasRect)
-                Positioned(
-                  left: 20,
-                  right: 20,
-                  top: isArrowUp ? rect.bottom + 30 : null,
-                  bottom: !isArrowUp ? (screenHeight - rect.top) + 30 : null,
-                  child: Material(
-                    type: MaterialType.transparency,
-                    child: FadeTransition(
-                      opacity: _fadeAnimation,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (isArrowUp)
-                            const Icon(Icons.arrow_drop_up, color: Colors.white, size: 40),
-                          Container(
-                            padding: const EdgeInsets.all(24),
+              Positioned(
+                left: 0,
+                right: 0,
+                top: (hasRect && !forceCenter)
+                    ? (isArrowUp ? rect.bottom + 20 : null)
+                    : null, 
+                bottom: (hasRect && !forceCenter)
+                    ? (!isArrowUp ? (screenHeight - rect.top) + 20 : null)
+                    : (forceCenter ? 50 : null), // Raised from 30 to 50
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 500),
+                    child: Material(
+                  type: MaterialType.transparency,
+                  child: FadeTransition(
+                    opacity: _fadeAnimation,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (hasRect && isArrowUp && !forceCenter)
+                          const Icon(Icons.arrow_drop_up, color: Colors.white, size: 40),
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                            constraints: BoxConstraints(
+                              maxHeight: screenHeight * 0.4, // Max 40% of screen height
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.white,
-                              borderRadius: BorderRadius.circular(28),
+                              borderRadius: BorderRadius.circular(24),
                               boxShadow: const [
                                 BoxShadow(
                                   color: Colors.black54,
@@ -386,65 +494,70 @@ class _GuidePointerState extends State<GuidePointer> with TickerProviderStateMix
                                 ),
                               ],
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    CircleAvatar(
-                                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                                      child: Icon(Icons.lightbulb_outline, color: HexColor("#116754")),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Text(
-                                        step.title,
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold, 
-                                          fontSize: 22, 
-                                          color: HexColor("#116754"),
-                                          letterSpacing: -0.5,
+                            child: SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Row(
+                                    children: [
+                                      CircleAvatar(
+                                        backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                                        child: Icon(Icons.lightbulb_outline, color: HexColor("#116754")),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text(
+                                          step.title,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold, 
+                                            fontSize: 18, // Reduced from 22
+                                            color: HexColor("#116754"),
+                                            letterSpacing: -0.5,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    step.content,
+                                    style: TextStyle(fontSize: 15, height: 1.5, color: Colors.grey[800]), // Reduced from 17
+                                  ),
+                                  if (!step.hideButton) ...[
+                                    const SizedBox(height: 20),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton(
+                                        onPressed: nextStep,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: HexColor("#116754"),
+                                          foregroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                          padding: const EdgeInsets.symmetric(vertical: 16),
+                                          elevation: 4,
+                                          shadowColor: HexColor("#116754").withValues(alpha: 0.4),
+                                        ),
+                                        child: Text(
+                                          step.buttonLabel ?? (_currentStepIndex < widget.steps.length - 1 ? "Next Tip" : "Finish"),
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                                         ),
                                       ),
                                     ),
                                   ],
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  step.content,
-                                  style: TextStyle(fontSize: 17, height: 1.6, color: Colors.grey[800]),
-                                ),
-                                if (!step.hideButton) ...[
-                                  const SizedBox(height: 24),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton(
-                                      onPressed: nextStep,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: HexColor("#116754"),
-                                        foregroundColor: Colors.white,
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                        padding: const EdgeInsets.symmetric(vertical: 20),
-                                        elevation: 8,
-                                        shadowColor: HexColor("#116754").withValues(alpha: 0.4),
-                                      ),
-                                      child: Text(
-                                        step.buttonLabel ?? (_currentStepIndex < widget.steps.length - 1 ? "Got it! Next Tip" : "Finish Tour"),
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                                      ),
-                                    ),
-                                  ),
                                 ],
-                              ],
+                              ),
                             ),
                           ),
-                          if (!isArrowUp)
-                            const Icon(Icons.arrow_drop_down, color: Colors.white, size: 40),
-                        ],
-                      ),
+                        if (hasRect && !isArrowUp && !forceCenter)
+                          const Icon(Icons.arrow_drop_down, color: Colors.white, size: 40),
+                      ],
                     ),
                   ),
                 ),
+              ),
+                ),
+              ),
             ],
           ),
         );
@@ -469,21 +582,19 @@ class SpotlightPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final overlayColor = Colors.black.withValues(alpha: 0.85 * opacity);
+    // FALLBACK: If no spotlight is visible (rect is zero), show a less dark overlay (40%) 
+    // instead of blocking the entire screen (85%), so the user can still orientations themselves.
+    final bool hasSpotlight = isVisible && !targetRect.isEmpty;
+    final overlayColor = Colors.black.withValues(
+      alpha: (hasSpotlight ? 0.85 : 0.4) * opacity
+    );
+    
     final overlayPaint = Paint()
       ..color = overlayColor
       ..style = PaintingStyle.fill;
 
-    if (!isVisible) {
+    if (!hasSpotlight) {
       canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), overlayPaint);
-      return;
-    }
-
-    if (targetRect.isEmpty) {
-      // If target exists but has no size yet (layout delay), show a less dark overlay
-      // to prevent the "total black out" effect reported by users.
-      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), 
-        overlayPaint..color = overlayColor.withValues(alpha: overlayColor.a * 0.3));
       return;
     }
 

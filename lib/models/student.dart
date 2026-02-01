@@ -5,12 +5,16 @@ class Student {
   final String studentId;
   final Map<String, Map<String, double>> grades; // subject -> {q1, q2, q3, q4}
   String? uid;
+  String? profileImageThumbnail;
+  String? profileImageUrl;
 
   Student({
     required this.name,
     required this.studentId,
     required this.grades,
     this.uid,
+    this.profileImageThumbnail,
+    this.profileImageUrl,
   });
 
   Map<String, dynamic> toJson() {
@@ -19,6 +23,8 @@ class Student {
       'studentId': studentId,
       'grades': grades.map((subject, quarters) => MapEntry(subject, quarters)),
       if (uid != null) 'uid': uid,
+      if (profileImageThumbnail != null) 'profileImageThumbnail': profileImageThumbnail,
+      if (profileImageUrl != null) 'profileImageUrl': profileImageUrl,
     };
   }
 
@@ -45,6 +51,8 @@ class Student {
       studentId: json['studentId'] as String? ?? '',
       grades: parsedGrades,
       uid: json['uid'] as String?,
+      profileImageThumbnail: json['profileImageThumbnail'] as String?,
+      profileImageUrl: json['profileImageUrl'] as String?,
     );
   }
   

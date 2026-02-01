@@ -2,21 +2,50 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+import 'dart:convert';
+import '../../services/fcm_service.dart';
 
 import '../../widgets/guide_pointer.dart';
 
 class TeacherInboxPage extends StatefulWidget {
-  const TeacherInboxPage({super.key});
+  final bool isStandalone;
+  const TeacherInboxPage({super.key, this.isStandalone = false});
 
   @override
   State<TeacherInboxPage> createState() => TeacherInboxPageState();
 }
 
 class TeacherInboxPageState extends State<TeacherInboxPage> {
+  Map<String, Map<String, dynamic>> _studentProfiles = {};
+  StreamSubscription? _profilesSub;
+  final GlobalKey _clearAllKey = GlobalKey();
+  final GlobalKey _firstMessageKey = GlobalKey();
+
+  void startInboxTour() {
+    debugPrint('TOUR: Starting Inbox Tour...');
+    GuidePointer.show(
+      context,
+      steps: [
+        GuideStep(
+          targetKey: _firstMessageKey,
+          title: "Your Messages",
+          content: "Incoming student requests and notifications will appear here. Red dots indicate unread messages.",
+        ),
+        GuideStep(
+          targetKey: _clearAllKey,
+          title: "Clear Inbox",
+          content: "You can remove all messages at once using this button. Note that clearing join requests will automatically deny them.",
+        ),
+      ],
+      onComplete: () {},
+    );
+  }
 
   @override
   void dispose() {
     GuidePointer.dismiss();
+    _profilesSub?.cancel();
     super.dispose();
   }
 
@@ -40,6 +69,26 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
     });
   }
 
+  void _listenToProfiles(List<String> uids) {
+    if (uids.isEmpty) return;
+
+    _profilesSub?.cancel();
+    _profilesSub = FirebaseFirestore.instance
+        .collection('students')
+        .where(FieldPath.documentId, whereIn: uids)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      final Map<String, Map<String, dynamic>> updatedProfiles = {};
+      for (var doc in snapshot.docs) {
+        updatedProfiles[doc.id] = doc.data();
+      }
+      setState(() {
+        _studentProfiles = updatedProfiles;
+      });
+    });
+  }
+
   Future<void> _handleJoinRequest(InboxMessage message, bool accept) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -55,15 +104,19 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
       // We rely on Firestore 'sections' array in student doc mainly now
       
       try {
-        // Teacher side: Add to section students list (persisted in section_detail logic)
-        // Here we just update the Student's 'sections' array in Firestore
+        // Teacher side: Add student to the actual Section's member list
+        await FirebaseFirestore.instance.collection('sections').doc(sectionName).update({
+          'studentUids': FieldValue.arrayUnion([studentUid])
+        });
+
+        // Student side: Link the section to the student's personal list
         await FirebaseFirestore.instance.collection('students').doc(studentUid).set(
             {'sections': FieldValue.arrayUnion([sectionName])},
             SetOptions(merge: true),
         );
 
         // Notify Student
-         await FirebaseFirestore.instance.collection('students').doc(studentUid).collection('inbox').add({
+        await FirebaseFirestore.instance.collection('students').doc(studentUid).collection('inbox').add({
           'title': 'Request Accepted',
           'message': 'Your request to join $sectionName has been accepted!',
           'timestamp': DateTime.now().toIso8601String(),
@@ -72,17 +125,25 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
           'sectionName': sectionName,
         });
 
+        // NEW: Trigger Push Notification
+        FCMService.sendNotification(
+          recipientUid: studentUid,
+          title: 'Request Accepted',
+          body: 'Your request to join $sectionName has been accepted!',
+          data: {'type': 'request_accepted', 'section': sectionName},
+        );
+
         // Clear Pending Request in Student record
         await FirebaseFirestore.instance.collection('students').doc(studentUid).update({
           'pendingRequests': FieldValue.arrayRemove([sectionName])
         });
-
       } catch (e) {
         debugPrint('Error accepting request: $e');
       }
     } else {
+      try {
         // Notify Student of denial
-         await FirebaseFirestore.instance.collection('students').doc(studentUid).collection('inbox').add({
+        await FirebaseFirestore.instance.collection('students').doc(studentUid).collection('inbox').add({
           'title': 'Request Denied',
           'message': 'Your request to join $sectionName has been denied.',
           'timestamp': DateTime.now().toIso8601String(),
@@ -91,10 +152,21 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
           'sectionName': sectionName,
         });
 
+        // NEW: Trigger Push Notification
+        FCMService.sendNotification(
+          recipientUid: studentUid,
+          title: 'Request Denied',
+          body: 'Your request to join $sectionName has been denied.',
+          data: {'type': 'request_denied', 'section': sectionName},
+        );
+
         // Clear Pending Request in Student record
         await FirebaseFirestore.instance.collection('students').doc(studentUid).update({
           'pendingRequests': FieldValue.arrayRemove([sectionName])
         });
+      } catch (e) {
+        debugPrint('Error denying request: $e');
+      }
     }
 
     // Delete request message from Inbox
@@ -176,6 +248,14 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
                 'sectionName': sectionName, 
               });
 
+              // NEW: Trigger Push Notification
+              FCMService.sendNotification(
+                recipientUid: studentUid,
+                title: 'Request Denied',
+                body: 'Your request to join $sectionName has been denied.',
+                data: {'type': 'request_denied', 'section': sectionName},
+              );
+
               // Clear Pending Request in Student record via batch
               batch.update(FirebaseFirestore.instance.collection('students').doc(studentUid), {
                 'pendingRequests': FieldValue.arrayRemove([sectionName])
@@ -228,7 +308,20 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
             final messages = snapshot.data ?? [];
             final unreadCount = messages.where((m) => !m.read).length;
 
-            return Container(
+            // Extract student UIDs for join requests
+            final studentUids = messages
+                .where((m) => m.type == 'join_request' && m.studentUid != null)
+                .map((m) => m.studentUid!)
+                .toSet()
+                .toList();
+
+            // Fetch profiles if any are missing
+            final missingUids = studentUids.where((uid) => !_studentProfiles.containsKey(uid)).toList();
+            if (missingUids.isNotEmpty) {
+               _listenToProfiles(studentUids); // Still listen to all to keep it simple and real-time
+            }
+
+            final content = Container(
               color: Colors.grey[50],
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -237,53 +330,55 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (!isMobile) ...[
-                                  Text(
-                                    'Inbox',
-                                    style: TextStyle(
-                                      fontSize: isMobile ? 28 : 32,
-                                      fontWeight: FontWeight.bold,
-                                      color: HexColor("#116754"),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                ],
-                                Text(
-                                  unreadCount == 0
-                                      ? 'No unread messages'
-                                      : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.grey[600],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                              if (messages.isNotEmpty)
-                                Row(
-                                  children: [
-                                    TextButton.icon(
-                                      onPressed: _clearAll,
-                                      icon: const Icon(Icons.clear_all, size: 18),
-                                      label: const Text('Clear All'),
-                                      style: TextButton.styleFrom(
-                                        foregroundColor: HexColor("#116754"),
+                      if (!widget.isStandalone) // Only show title in body if not standalone
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (!isMobile) ...[
+                                    Text(
+                                      'Inbox',
+                                      style: TextStyle(
+                                        fontSize: isMobile ? 28 : 32,
+                                        fontWeight: FontWeight.bold,
+                                        color: HexColor("#116754"),
                                       ),
                                     ),
+                                    const SizedBox(height: 4),
                                   ],
-                                ),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
-    
+                                  Text(
+                                    unreadCount == 0
+                                        ? 'No unread messages'
+                                        : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (messages.isNotEmpty)
+                              Row(
+                                children: [
+                                  TextButton.icon(
+                                    key: _clearAllKey,
+                                    onPressed: _clearAll,
+                                    icon: const Icon(Icons.clear_all, size: 18),
+                                    label: const Text('Clear All'),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: HexColor("#116754"),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
+                      if (!widget.isStandalone) const SizedBox(height: 24),
+
                       if (messages.isEmpty)
                         SizedBox(
                           height: constraints.maxHeight * 0.6,
@@ -328,7 +423,10 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
                             final message = entry.value;
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 12),
-                              child: _buildMessageCard(message, index),
+                              child: Container(
+                                key: index == 0 ? _firstMessageKey : null,
+                                child: _buildMessageCard(message, index),
+                              ),
                             );
                           }),
                     ],
@@ -336,6 +434,30 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
                 ),
               ),
             );
+
+            if (widget.isStandalone) {
+              return Scaffold(
+                backgroundColor: Colors.white,
+                appBar: AppBar(
+                  title: const Text('Inbox', style: TextStyle(fontWeight: FontWeight.bold)),
+                  backgroundColor: HexColor("#116754"),
+                  foregroundColor: Colors.white,
+                  centerTitle: true,
+                  elevation: 0,
+                  actions: [
+                    if (messages.isNotEmpty)
+                      IconButton(
+                        onPressed: _clearAll,
+                        icon: const Icon(Icons.clear_all),
+                        tooltip: 'Clear All',
+                      ),
+                  ],
+                ),
+                body: content,
+              );
+            }
+
+            return content;
           },
         );
       },
@@ -374,15 +496,35 @@ class TeacherInboxPageState extends State<TeacherInboxPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                CircleAvatar(
-                  radius: 20,
-                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                  child: Icon(
-                    isJoinRequest ? Icons.person_add : Icons.notifications,
-                    color: HexColor("#116754"),
-                    size: 20,
+                if (isJoinRequest)
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.black, width: 1.5),
+                    ),
+                    child: CircleAvatar(
+                      radius: 20,
+                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                      backgroundImage: _studentProfiles[message.studentUid]?['profileImageThumbnail'] != null
+                          ? MemoryImage(base64Decode(_studentProfiles[message.studentUid]!['profileImageThumbnail']))
+                          : (_studentProfiles[message.studentUid]?['profileImageUrl'] != null
+                              ? NetworkImage(_studentProfiles[message.studentUid]!['profileImageUrl'])
+                              : null) as ImageProvider?,
+                      child: (_studentProfiles[message.studentUid]?['profileImageThumbnail'] == null && _studentProfiles[message.studentUid]?['profileImageUrl'] == null)
+                          ? Icon(Icons.person, color: HexColor("#116754"), size: 20)
+                          : null,
+                    ),
+                  )
+                else
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                    child: Icon(
+                      Icons.notifications,
+                      color: HexColor("#116754"),
+                      size: 20,
+                    ),
                   ),
-                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(

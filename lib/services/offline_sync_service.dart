@@ -10,7 +10,9 @@ class OfflineSyncService {
   factory OfflineSyncService() => _instance;
   OfflineSyncService._internal();
 
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  FirebaseFirestore? _firestoreInstance;
+  FirebaseFirestore get _firestore => _firestoreInstance ?? FirebaseFirestore.instance;
+
   final ConnectivityService _connectivityService = ConnectivityService();
   StreamSubscription<bool>? _connectivitySubscription;
   

@@ -3,7 +3,7 @@ description: "A new Flutter project."
 
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: ^3.10.4
@@ -29,6 +29,10 @@ dependencies:
   image_cropper: ^8.0.0
   flutter_image_compress: ^2.4.0
   connectivity_plus: ^6.1.0
+  http: ^1.1.0
+  delightful_toast: ^1.1.0
+  firebase_messaging: ^16.1.1
+  googleapis_auth: ^1.4.1
 
 
 

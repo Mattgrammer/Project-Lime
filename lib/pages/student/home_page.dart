@@ -4,42 +4,43 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:lime/pages/student/request_section_page.dart';
 import 'package:lime/pages/student/about_page.dart';
-import 'package:lime/pages/student/notifications_page.dart';
+import 'package:lime/pages/student/inbox_page.dart';
 import 'package:lime/widgets/guide_pointer.dart'; // NEW IMPORT
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:async';
 import 'dart:io';
 
 class HomePage extends StatefulWidget {
-  final Function(int index)? onNavigate;
-  final bool startTour;
+  final Function(int index, {int? initialTab})? onNavigate;
   final Stream<QuerySnapshot>? sectionsStream;
   final String? profileImagePath;
   final String? profileImageThumbnail;
   final String? profileImageUrl;
+  final Uint8List? profileThumbnailBytes;
   
   // Keys for spotlight targets
   final GlobalKey? scheduleKey;
   final GlobalKey? classesKey;
   final GlobalKey? gradesKey;
-  final GlobalKey? inboxKey;
   final GlobalKey? profileKey;
   final GlobalKey? helpKey;
+  final GlobalKey? statsOverviewKey; // Parent-managed key
 
   const HomePage({
     super.key, 
     this.onNavigate, 
-    this.startTour = false,
     this.scheduleKey,
     this.classesKey, 
     this.gradesKey,
-    this.inboxKey,
     this.profileKey,
     this.helpKey,
+    this.statsOverviewKey,
     this.sectionsStream,
     this.profileImagePath,
     this.profileImageThumbnail,
     this.profileImageUrl,
+    this.profileThumbnailBytes,
   });
 
   @override
@@ -49,106 +50,88 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   StreamSubscription? _statsSubscription;
   StreamSubscription? _sectionsSubscription;
-  int _enrolledCount = 0;
+  StreamSubscription? _messagesSubscription;
+  int _enrolledS1 = 0;
+  int _enrolledS2 = 0;
   int _upcomingClasses = 0;
-  double _averageGrade = 0.0;
+  double _avgSem1 = 0.0;
+  double _avgSem2 = 0.0;
+  Map<String, dynamic>? _lastGradesMap;
+  QuerySnapshot? _lastSectionsSnapshot;
   int _unreadMessages = 0;
   List<Map<String, dynamic>> _todayClassesDetails = [];
   String? _profileImageUrl;
   String? _profileImageThumbnail;
   bool _isLoading = true;
+  Map<String, dynamic> _releaseDates = {};
 
   // NEW: For tutorial
   final GlobalKey _joinClassKey = GlobalKey();
-  final GlobalKey _statsOverviewKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
     _loadStats();
+    _listenToGradeRelease();
     
     // Safety timeout: If still loading after 3 seconds, force show the dashboard.
-    // This prevents stuck spinners if streams are slow or unexpectedly empty.
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted && _isLoading) {
         setState(() => _isLoading = false);
       }
     });
+  }
 
-    if (widget.startTour) {
-      Future.delayed(const Duration(milliseconds: 800), () {
-        if (mounted) _startTour();
-      });
+  void _listenToGradeRelease() {
+    FirebaseFirestore.instance
+        .collection('app_config')
+        .doc('grades')
+        .snapshots()
+        .listen((doc) {
+      if (!mounted) return;
+      if (doc.exists) {
+        final data = doc.data()!;
+        setState(() {
+          _releaseDates = data['releaseDates'] as Map<String, dynamic>? ?? {};
+        });
+      }
+    });
+  }
+
+  bool _isQuarterLocked(String quarter) {
+    final qData = _releaseDates[quarter] as Map<String, dynamic>?;
+    final ts = qData?['date'] as Timestamp?;
+    if (ts == null) return false;
+    return ts.toDate().isAfter(DateTime.now());
+  }
+
+  bool _isSemesterLocked(int semester) {
+    if (semester == 1) {
+      return _isQuarterLocked('q1') || _isQuarterLocked('q2');
+    } else {
+      return _isQuarterLocked('q3') || _isQuarterLocked('q4');
     }
   }
 
-  void _startTour() {
-    GuidePointer.show(
-      context,
-      steps: [
-        GuideStep(
-           targetKey: _statsOverviewKey,
-           title: "Academic Performance",
-           content: "Monitor your enrolled subjects, daily schedule, GPA transitions, and unread communications at a glance.",
-        ),
-         // Only show Join Class step if not enrolled and looking at empty state
-        if (_enrolledCount == 0)
-          GuideStep(
-            targetKey: _joinClassKey,
-            title: "Requesting a Section",
-            content: "New here? Use this card to search for your course code and request to join your class section.",
-          ),
-          
-        if (widget.classesKey != null)
-          GuideStep(
-            targetKey: widget.classesKey!,
-            title: "My Subjects",
-            content: "Access your enrolled subjects and grades from this tab.",
-            buttonLabel: "Next",
-          ),
-          
-        if (widget.gradesKey != null)
-          GuideStep(
-            targetKey: widget.gradesKey!,
-            title: "Grades Overview",
-            content: "Track your academic progress and see your latest marks here.",
-            buttonLabel: "Next",
-          ),
-          
-        if (widget.inboxKey != null)
-           GuideStep(
-            targetKey: widget.inboxKey!,
-            title: "Inbox",
-            content: "Check messages and announcements from your teachers here.",
-            buttonLabel: "Next",
-          ),
-          
-        if (widget.helpKey != null)
-           GuideStep(
-            targetKey: widget.helpKey!,
-            title: "Help & Tutorials",
-            content: "Need guidance? Access all interactive tutorials and app information right here.",
-            buttonLabel: "Next",
-          ),
-          
-        if (widget.profileKey != null)
-           GuideStep(
-            targetKey: widget.profileKey!,
-            title: "Your Profile",
-            content: "Manage your account, update your photo, and request new sections for your subjects.",
-            buttonLabel: "Finish Tour",
-          ),
-      ],
-      onComplete: () {},
-    );
+  DateTime? _getNextReleaseDate() {
+    DateTime? next;
+    _releaseDates.forEach((key, val) {
+      final ts = val['date'] as Timestamp?;
+      if (ts != null) {
+        final date = ts.toDate();
+        if (date.isAfter(DateTime.now())) {
+          if (next == null || date.isBefore(next!)) {
+            next = date;
+          }
+        }
+      }
+    });
+    return next;
   }
 
   @override
   void didUpdateWidget(HomePage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.startTour && !oldWidget.startTour) {
-      _startTour();
-    }
   }
 
   String _getGreeting() {
@@ -178,6 +161,7 @@ class _HomePageState extends State<HomePage> {
     GuidePointer.dismiss();
     _statsSubscription?.cancel();
     _sectionsSubscription?.cancel();
+    _messagesSubscription?.cancel();
     super.dispose();
   }
 
@@ -198,44 +182,26 @@ class _HomePageState extends State<HomePage> {
       if (!mounted || !doc.exists) return;
       final data = doc.data()!;
       
-      // Calculate Average Grade from doc
-      double avg = 0.0;
-      final gradesMap = data['grades'] as Map<String, dynamic>?;
-      if (gradesMap != null && gradesMap.isNotEmpty) {
-        double sum = 0;
-        int count = 0;
-        gradesMap.forEach((_, val) {
-           if (val is Map) {
-             final quarters = val.values.whereType<num>();
-             if (quarters.isNotEmpty) {
-               final qSum = quarters.fold(0.0, (a, b) => a + b.toDouble());
-               sum += qSum / quarters.length;
-               count++;
-             }
-           } else if (val is num) {
-             sum += val.toDouble();
-             count++;
-           }
-        });
-        if (count > 0) avg = double.parse((sum / count).toStringAsFixed(1));
-      }
+      // Update state data for GPA calculation
+      _lastGradesMap = data['grades'] as Map<String, dynamic>?;
+      _calculateSemesterGPAs();
 
-      // Fetch Unread count (Independent sub-query)
-      FirebaseFirestore.instance
+      // Fetch Unread count (Real-time listener)
+      _messagesSubscription?.cancel();
+      _messagesSubscription = FirebaseFirestore.instance
           .collection('students')
           .doc(user.uid)
           .collection('inbox')
           .where('read', isEqualTo: false)
-          .count() // Use count() for efficiency! 0.001 reads/index
-          .get()
-          .then((countSnap) {
-            if (mounted) setState(() => _unreadMessages = countSnap.count ?? 0);
+          .snapshots()
+          .listen((snap) {
+            if (mounted) setState(() => _unreadMessages = snap.docs.length);
           });
 
+      // Calculations triggered above
       if (mounted) {
         setState(() {
-          _averageGrade = avg;
-          _enrolledCount = List<String>.from(data['sections'] ?? []).toSet().length;
+          // No longer using single _averageGrade
         });
       }
     });
@@ -281,12 +247,102 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (mounted) {
+      final Set<String> s1Subjects = {};
+      final Set<String> s2Subjects = {};
+      for (var doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>?;
+        final schedule = data?['schedule'] as List?;
+        if (schedule != null) {
+          for (var item in schedule) {
+            if (item is Map<String, dynamic> && item['subject'] != null) {
+              final sem = item['semester'] as int? ?? 1;
+              if (sem == 1) {
+                s1Subjects.add(item['subject']);
+              } else {
+                s2Subjects.add(item['subject']);
+              }
+            }
+          }
+        }
+      }
+
       setState(() {
         _upcomingClasses = todayClassesCount;
         _todayClassesDetails = todayDetails;
+        _enrolledS1 = s1Subjects.length;
+        _enrolledS2 = s2Subjects.length;
+        _lastSectionsSnapshot = snapshot;
+        _calculateSemesterGPAs();
         _isLoading = false;
       });
     }
+  }
+
+  void _calculateSemesterGPAs() {
+    if (_lastGradesMap == null) return;
+
+    final Map<String, int> subjectSemesters = {};
+    if (_lastSectionsSnapshot != null) {
+      for (var doc in _lastSectionsSnapshot!.docs) {
+        final data = doc.data() as Map<String, dynamic>?;
+        final schedule = data?['schedule'] as List?;
+        if (schedule != null) {
+          for (var item in schedule) {
+            if (item is Map<String, dynamic> && item['subject'] != null) {
+              subjectSemesters[item['subject']] = item['semester'] as int? ?? 1;
+            }
+          }
+        }
+      }
+    }
+
+    double s1Sum = 0, s2Sum = 0;
+    int s1Count = 0, s2Count = 0;
+
+    _lastGradesMap!.forEach((subject, val) {
+      double subjectAvg = 0;
+      bool hasData = false;
+      if (val is Map) {
+        final scores = val.values.whereType<num>();
+        if (scores.isNotEmpty) {
+          subjectAvg = scores.fold(0.0, (a, b) => a + b.toDouble()) / scores.length;
+          hasData = true;
+        }
+      } else if (val is num) {
+        subjectAvg = val.toDouble();
+        hasData = true;
+      }
+
+      if (hasData) {
+        int sem = subjectSemesters[subject] ?? 1;
+        if (sem == 1) {
+          s1Sum += subjectAvg;
+          s1Count++;
+        } else {
+          s2Sum += subjectAvg;
+          s2Count++;
+        }
+      }
+    });
+
+    if (mounted) {
+      setState(() {
+        _avgSem1 = s1Count > 0 ? (s1Sum / s1Count).roundToDouble() : 0.0;
+        _avgSem2 = s2Count > 0 ? (s2Sum / s2Count).roundToDouble() : 0.0;
+      });
+    }
+  }
+
+  int get _activeSemester {
+    final month = DateTime.now().month;
+    // Standard: 2nd Sem (Jan-May: 1-5), 1st Sem (Rest)
+    int dateBasedSem = (month >= 1 && month <= 5) ? 2 : 1;
+    
+    // Smart switch: If date-based sem has 0 subjects but other has data, show the other
+    if (dateBasedSem == 1 && _enrolledS1 == 0 && _enrolledS2 > 0) return 2;
+    if (dateBasedSem == 2 && _enrolledS2 == 0 && _enrolledS1 > 0) return 1;
+    
+    return dateBasedSem;
   }
 
   void _showTodayClassesDialog(BuildContext context) {
@@ -388,11 +444,11 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(height: 24),
                   Container(
-                    key: _statsOverviewKey,
+                    key: widget.statsOverviewKey,
                     child: _buildDesktopStats(width),
                   ),
                   const SizedBox(height: 32),
-                  _buildInteractiveGuide(context, _enrolledCount), // Added guide to desktop too
+
                   const SizedBox(height: 32),
                 ],
               ),
@@ -401,37 +457,43 @@ class _HomePageState extends State<HomePage> {
         }
 
         // Mobile Layout - Modern Dashboard
-        return Scaffold(
-          backgroundColor: const Color(0xFFF5F7FA), // Light grey bg
-          body: SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-              child: Column(
+        // Removed nested Scaffold on mobile to avoid Overlay/SafeArea conflicts
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // 1. Header
                   Row(
                     children: [
-                      CircleAvatar(
-                        key: ValueKey(_profileImageUrl ?? _profileImageThumbnail),
-                        radius: 24,
-                        backgroundColor: HexColor("#116754"),
-                        backgroundImage: (_profileImageThumbnail ?? widget.profileImageThumbnail) != null 
-                            ? MemoryImage(base64Decode(_profileImageThumbnail ?? widget.profileImageThumbnail!))
-                            : ((_profileImageUrl ?? widget.profileImageUrl) != null 
-                                ? NetworkImage(_profileImageUrl ?? widget.profileImageUrl!) 
-                                : (widget.profileImagePath != null && File(widget.profileImagePath!).existsSync()
-                                    ? FileImage(File(widget.profileImagePath!))
-                                    : null)) as ImageProvider?,
-                        child: (_profileImageUrl == null && _profileImageThumbnail == null && widget.profileImageUrl == null && widget.profileImageThumbnail == null && (widget.profileImagePath == null || !File(widget.profileImagePath!).existsSync()))
-                            ? Text(
-                                userName.isNotEmpty ? userName[0].toUpperCase() : 'S',
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
-                              )
-                            : null,
+                      Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black, width: 2.0),
+                        ),
+                        child: CircleAvatar(
+                          key: ValueKey("${_profileImageUrl ?? _profileImageThumbnail}_${widget.profileThumbnailBytes?.length ?? 0}_${widget.profileImagePath}"),
+                          radius: 24,
+                          backgroundColor: HexColor("#116754"),
+                          backgroundImage: widget.profileThumbnailBytes != null 
+                              ? MemoryImage(widget.profileThumbnailBytes!)
+                              : ((_profileImageThumbnail ?? widget.profileImageThumbnail) != null 
+                                  ? MemoryImage(base64Decode(_profileImageThumbnail ?? widget.profileImageThumbnail!))
+                                  : ((_profileImageUrl ?? widget.profileImageUrl) != null 
+                                      ? NetworkImage(_profileImageUrl ?? widget.profileImageUrl!) 
+                                      : (widget.profileImagePath != null && File(widget.profileImagePath!).existsSync()
+                                          ? FileImage(File(widget.profileImagePath!))
+                                          : null))) as ImageProvider?,
+                          child: (widget.profileThumbnailBytes == null && _profileImageUrl == null && _profileImageThumbnail == null && widget.profileImageUrl == null && widget.profileImageThumbnail == null && (widget.profileImagePath == null || !File(widget.profileImagePath!).existsSync()))
+                              ? Text(
+                                  userName.isNotEmpty ? userName[0].toUpperCase() : 'S',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+                                )
+                              : null,
+                        ),
                       ),
                       const SizedBox(width: 12),
-                      Expanded(
+                      Flexible( // Changed from Expanded to Flexible to keep photo closer
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -453,25 +515,56 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      GestureDetector(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const NotificationsPage()),
-                          );
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                      if (MediaQuery.of(context).size.width <= 900)
+                        GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const InboxPage(isStandalone: true)),
+                            );
+                          },
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4)),
+                                  ],
+                                ),
+                                child: Icon(Icons.notifications_none_rounded, color: HexColor("#116754")),
+                              ),
+                              if (_unreadMessages > 0)
+                                Positioned(
+                                  right: -2,
+                                  top: -2,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.red,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 16,
+                                      minHeight: 16,
+                                    ),
+                                    child: Text(
+                                      _unreadMessages > 9 ? '9+' : '$_unreadMessages',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
                             ],
                           ),
-                          child: Icon(Icons.notifications_none_rounded, color: HexColor("#116754")),
                         ),
-                      ),
                     ],
                   ),
                   
@@ -512,25 +605,49 @@ class _HomePageState extends State<HomePage> {
 
                   // 3. Stats / Quick Actions (Horizontal Scroll)
                   SizedBox(
-                    key: _statsOverviewKey,
-                    height: 150, // Increased to 150 to definitively fix overflow
+                    key: widget.statsOverviewKey,
+                    height: 150,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
                       clipBehavior: Clip.none,
                       children: [
-                         _buildStatChip('SUBJECTS', _enrolledCount.toString(), Icons.book, HexColor("#116754"), onTap: () => widget.onNavigate?.call(0)),
+                         _buildStatChip(
+                           'Subjects (S$_activeSemester)',
+                           (_activeSemester == 1 ? _enrolledS1 : _enrolledS2).toString(),
+                           Icons.book,
+                           HexColor("#116754"),
+                           onTap: () => widget.onNavigate?.call(0, initialTab: _activeSemester - 1)
+                         ),
                          const SizedBox(width: 12),
                          _buildStatChip(
-                           'Classes Today', 
-                           _upcomingClasses.toString(), 
-                           Icons.class_outlined, 
+                           'Average Grade',
+                           _isSemesterLocked(_activeSemester)
+                               ? '🔒' 
+                               : (_activeSemester == 1 ? _avgSem1 : _avgSem2).round().toString(),
+                           Icons.grade,
+                           HexColor("#1e824c"),
+                           onTap: _isSemesterLocked(_activeSemester)
+                               ? () {
+                                   final nextDate = _getNextReleaseDate();
+                                   ScaffoldMessenger.of(context).showSnackBar(
+                                     SnackBar(
+                                       content: Text(nextDate != null 
+                                         ? 'Next release: ${_formatDateTime(nextDate)}'
+                                         : 'Grades are currently being processed'),
+                                       backgroundColor: HexColor("#116754"),
+                                     ),
+                                   );
+                                 }
+                               : () => widget.onNavigate?.call(1, initialTab: _activeSemester)
+                         ),
+                         const SizedBox(width: 12),
+                         _buildStatChip(
+                           'Classes Today',
+                           _upcomingClasses.toString(),
+                           Icons.class_outlined,
                            HexColor("#1e824c"),
                            onTap: () => _showTodayClassesDialog(context),
                          ),
-                         const SizedBox(width: 12),
-                         _buildStatChip('Avg Grade', _averageGrade.toString(), Icons.grade, HexColor("#d4af37"), onTap: () => widget.onNavigate?.call(1)),
-                         const SizedBox(width: 12),
-                         _buildStatChip('Inbox', _unreadMessages.toString(), Icons.mail, HexColor("#e63946"), onTap: () => widget.onNavigate?.call(4)),
                          const SizedBox(width: 12),
                          _buildActionChip('Request', Icons.person_add, HexColor("#8e44ad"), () {
                             Navigator.push(context, MaterialPageRoute(builder: (context) => const RequestSectionPage()));
@@ -545,17 +662,12 @@ class _HomePageState extends State<HomePage> {
 
                   const SizedBox(height: 32),
 
-                  // 4. Interactive Quick Start Guide
-                  _buildInteractiveGuide(context, _enrolledCount),
+
 
                   const SizedBox(height: 32),
 
                     
-                  // Extra space for bottom nav
-                  const SizedBox(height: 80),
-                ],
-              ),
-            ),
+            ],
           ),
         );
         }
@@ -647,6 +759,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  String _formatDateTime(DateTime dt) {
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    String hour = dt.hour > 12 ? (dt.hour - 12).toString() : (dt.hour == 0 ? "12" : dt.hour.toString());
+    String period = dt.hour >= 12 ? "PM" : "AM";
+    String minute = dt.minute.toString().padLeft(2, '0');
+    return "${months[dt.month - 1]} ${dt.day}, ${dt.year} at $hour:$minute $period";
+  }
 
   // --- Legacy / Desktop Widgets ---
   
@@ -657,11 +776,10 @@ class _HomePageState extends State<HomePage> {
     final cardWidth = (width - 48 - totalSpacing) / crossAxisCount;
 
     return Wrap(
-      key: _statsOverviewKey,
       spacing: spacing,
       runSpacing: spacing,
       children: [
-        SizedBox(width: cardWidth, child: _buildStatCard('SUBJECTS', _enrolledCount.toString(), Icons.book, HexColor("#116754"), onTap: () => widget.onNavigate?.call(0))),
+        SizedBox(width: cardWidth, child: _buildStatCard('Subjects (S$_activeSemester)', (_activeSemester == 1 ? _enrolledS1 : _enrolledS2).toString(), Icons.book, HexColor("#116754"), onTap: () => widget.onNavigate?.call(0, initialTab: _activeSemester - 1))),
          // Removed Account Type
         SizedBox(width: cardWidth, child: _buildStatCard(
           'Classes Today', 
@@ -670,8 +788,16 @@ class _HomePageState extends State<HomePage> {
           HexColor("#1e824c"),
           onTap: () => _showTodayClassesDialog(context),
         )),
-        SizedBox(width: cardWidth, child: _buildStatCard('Average Grade', _averageGrade.toString(), Icons.grade, HexColor("#d4af37"), onTap: () => widget.onNavigate?.call(1))),
-        SizedBox(width: cardWidth, child: _buildStatCard('Unread Messages', _unreadMessages.toString(), Icons.mail, HexColor("#e63946"), onTap: () => widget.onNavigate?.call(4))),
+        SizedBox(width: cardWidth, child: _buildStatCard(
+          'Average (S$_activeSemester)', 
+          _isSemesterLocked(_activeSemester) 
+              ? '🔒' 
+              : (_activeSemester == 1 ? _avgSem1 : _avgSem2).round().toString(), 
+          Icons.grade, 
+          HexColor("#d4af37"), 
+          onTap: () => widget.onNavigate?.call(1, initialTab: _activeSemester)
+        )),
+        SizedBox(width: cardWidth, child: _buildStatCard('Inbox', _unreadMessages.toString(), Icons.mail_outline, HexColor("#e63946"), onTap: () => widget.onNavigate?.call(4))),
       ],
     );
   }
@@ -715,92 +841,5 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildInteractiveGuide(BuildContext context, int enrolledCount) {
-    if (enrolledCount > 0) return const SizedBox.shrink();
 
-    String title = "Step 1: Join Your Class";
-    String description = "You aren't enrolled in any classes yet. Find your class and request to join to see your grades and subjects.";
-    IconData icon = Icons.search_rounded;
-
-    return Container(
-      key: _joinClassKey,
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [HexColor("#116754"), HexColor("#1e824c")],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: HexColor("#116754").withValues(alpha: 0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Icon(icon, color: Colors.white, size: 32),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            description,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const RequestSectionPage()),
-                );
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: HexColor("#116754"),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                elevation: 0,
-              ),
-              child: const Text(
-                "Find My Class",
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

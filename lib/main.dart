@@ -21,7 +21,10 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:lime/services/fcm_service.dart';
 
+
+bool _isFirebaseReady = false;
 
 void main() async {
   // Set up global error handlers to prevent red screens
@@ -47,25 +50,43 @@ void main() async {
 
     // Initialize Firebase with timeout protection
     try {
-      await Firebase.initializeApp(
+      // Use a longer timeout on Windows/Desktop, but let it be more natural on mobile
+      final initFuture = Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
-      ).timeout(
-        const Duration(seconds: 15),
-        onTimeout: () {
-          debugPrint('Firebase initialization timed out');
-          throw Exception('Firebase initialization timed out');
-        },
       );
+      
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        await initFuture.timeout(
+          const Duration(seconds: 20),
+          onTimeout: () {
+            debugPrint('Firebase initialization timed out');
+            throw Exception('Firebase initialization timed out');
+          },
+        );
+      } else {
+        // Mobile platform - standard await
+        await initFuture;
+      }
 
-      // Explicitly configure Firestore settings for all platforms
+      _isFirebaseReady = true;
+
+      // Explicitly configure Firestore settings
       FirebaseFirestore.instance.settings = const Settings(
         persistenceEnabled: true,
         cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
       );
       debugPrint('Firestore initialized - persistence enabled (Unlimited Cache)');
+      
+      // Initialize FCM
+      try {
+        await FCMService.initialize();
+      } catch (e) {
+        debugPrint('FCM initialization error: $e');
+      }
     } catch (e) {
+      _isFirebaseReady = false;
       debugPrint('Firebase initialization error: $e');
-      // Continue anyway - app might work offline
+      // Continue anyway - app might work offline IF initialization succeeded but timed out
     }
 
     // Initialize connectivity and sync services
@@ -83,18 +104,19 @@ void main() async {
       // Non-fatal, continue - app will work without connectivity monitoring
     }
 
-    try {
-      await OfflineSyncService().init().timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          debugPrint('OfflineSyncService initialization timed out');
-        },
-      );
-      debugPrint('Connectivity and sync services initialized');
-    } catch (e, stackTrace) {
-      debugPrint('Error initializing OfflineSyncService: $e');
-      debugPrint('Stack trace: $stackTrace');
-      // Non-fatal, continue - app will work without sync service
+    if (_isFirebaseReady) {
+      try {
+        await OfflineSyncService().init().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            debugPrint('OfflineSyncService initialization timed out');
+          },
+        );
+        debugPrint('Connectivity and sync services initialized');
+      } catch (e, stackTrace) {
+        debugPrint('Error initializing OfflineSyncService: $e');
+        debugPrint('Stack trace: $stackTrace');
+      }
     }
 
     // Initialize Notifications - Only on mobile platforms
@@ -161,6 +183,10 @@ class MyApp extends StatelessWidget {
       },
       // Global error handler to prevent red screens
       builder: (context, child) {
+        if (!_isFirebaseReady) {
+          return child ?? const SizedBox.shrink();
+        }
+        
         return StreamBuilder<DocumentSnapshot>(
           stream: FirebaseFirestore.instance
               .collection('app_config')

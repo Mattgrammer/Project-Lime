@@ -178,10 +178,16 @@ class _SubjectTeacherPageState extends State<SubjectTeacherPage> {
                               ),
                               child: Row(
                                 children: [
-                                  CircleAvatar(
-                                    radius: 36,
-                                    backgroundColor: HexColor('#116754').withValues(alpha: 0.1),
-                                    child: Icon(Icons.person, color: HexColor('#116754')),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.black, width: 2.0),
+                                    ),
+                                    child: CircleAvatar(
+                                      radius: 36,
+                                      backgroundColor: HexColor('#116754').withValues(alpha: 0.1),
+                                      child: Icon(Icons.person, color: HexColor('#116754')),
+                                    ),
                                   ),
                                   const SizedBox(width: 16),
                                   Expanded(

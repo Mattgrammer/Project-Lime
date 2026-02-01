@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
+import '../../widgets/lime_dropdown.dart';
 
 class UnassignedStudentsPage extends StatefulWidget {
   const UnassignedStudentsPage({super.key});
@@ -14,6 +16,7 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
   List<UnassignedStudent> _allStudents = [];
   List<UnassignedStudent> _filteredStudents = [];
   final TextEditingController _searchController = TextEditingController();
+  String? _selectedGradeLevel;
   bool _isLoading = true;
 
   @override
@@ -47,10 +50,14 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
         final sections = data['sections'] as List<dynamic>?;
 
         if (sections == null || sections.isEmpty) {
+          final String? gVal = data['gradeLevel'] as String?;
           students.add(UnassignedStudent(
             uid: uid,
             name: name,
             email: data['email'] as String? ?? '',
+            gradeLevel: gVal,
+            profileImageThumbnail: data['profileImageThumbnail'] as String?,
+            profileImageUrl: data['profileImageUrl'] as String?,
           ));
         }
       }
@@ -71,14 +78,16 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
   void _filterStudents() {
     final query = _searchController.text.toLowerCase();
     setState(() {
-      if (query.isEmpty) {
-        _filteredStudents = _allStudents;
-      } else {
-        _filteredStudents = _allStudents.where((student) {
-          return student.name.toLowerCase().contains(query) ||
-                 student.email.toLowerCase().contains(query);
-        }).toList();
-      }
+      _filteredStudents = _allStudents.where((student) {
+        final matchesSearch = query.isEmpty || 
+                             student.name.toLowerCase().contains(query) ||
+                             student.email.toLowerCase().contains(query);
+        
+        final matchesGrade = _selectedGradeLevel == null || 
+                            student.gradeLevel == _selectedGradeLevel;
+
+        return matchesSearch && matchesGrade;
+      }).toList();
     });
   }
 
@@ -192,21 +201,49 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      TextField(
-                        controller: _searchController,
-                        decoration: InputDecoration(
-                          hintText: 'Search by name or email...',
-                          prefixIcon: const Icon(Icons.search),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: TextField(
+                              controller: _searchController,
+                              decoration: InputDecoration(
+                                hintText: 'Search by name or email...',
+                                prefixIcon: const Icon(Icons.search),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                filled: true,
+                                fillColor: Colors.grey[100],
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              ),
+                            ),
                           ),
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                        ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: LIMEDropdown<String>(
+                              label: 'Grade Level',
+                              hint: 'All Grades',
+                              value: _selectedGradeLevel,
+                              compact: true,
+                              items: const [
+                                DropdownMenuItem(value: null, child: Text('All Grades')),
+                                DropdownMenuItem(value: 'Grade 11', child: Text('Grade 11')),
+                                DropdownMenuItem(value: 'Grade 12', child: Text('Grade 12')),
+                              ],
+                              onChanged: (val) {
+                                setState(() => _selectedGradeLevel = val);
+                                _filterStudents();
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
+                const Divider(height: 1),
                 Expanded(
                   child: _filteredStudents.isEmpty
                       ? Center(
@@ -257,11 +294,24 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                                 ),
                                 child: Row(
                                   children: [
-                                    CircleAvatar(
-                                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                                      child: Icon(
-                                        Icons.person,
-                                        color: HexColor("#116754"),
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: Colors.black, width: 2.0),
+                                      ),
+                                      child: CircleAvatar(
+                                        backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                                        backgroundImage: student.profileImageThumbnail != null
+                                            ? MemoryImage(base64Decode(student.profileImageThumbnail!))
+                                            : (student.profileImageUrl != null
+                                                ? NetworkImage(student.profileImageUrl!)
+                                                : null) as ImageProvider?,
+                                        child: (student.profileImageThumbnail == null && student.profileImageUrl == null)
+                                            ? Icon(
+                                                Icons.person,
+                                                color: HexColor("#116754"),
+                                              )
+                                            : null,
                                       ),
                                     ),
                                     const SizedBox(width: 16),
@@ -315,11 +365,17 @@ class UnassignedStudent {
   final String uid;
   final String name;
   final String email;
+  final String? gradeLevel;
+  final String? profileImageThumbnail;
+  final String? profileImageUrl;
 
   UnassignedStudent({
     required this.uid,
     required this.name,
     required this.email,
+    this.gradeLevel,
+    this.profileImageThumbnail,
+    this.profileImageUrl,
   });
 }
 

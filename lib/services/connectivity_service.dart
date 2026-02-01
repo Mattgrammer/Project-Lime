@@ -39,15 +39,15 @@ class ConnectivityService {
         },
         onError: (error) {
           debugPrint('ConnectivityService: Stream error: $error');
-          // Default to offline on stream error
-          _updateStatus(false);
+          // Default to online on stream error to avoid blocking UI
+          _updateStatus(true);
         },
         cancelOnError: false, // Keep listening even on errors
       );
     } catch (e) {
       debugPrint('ConnectivityService: Initialization error: $e');
-      // Default to offline if initialization fails
-      _updateStatus(false);
+      // Default to online if initialization fails
+      _updateStatus(true);
     }
   }
 
@@ -58,18 +58,16 @@ class ConnectivityService {
       _updateConnectivityStatus(results);
     } catch (e) {
       debugPrint('ConnectivityService: Error checking connectivity: $e');
-      // Default to offline if check fails
-      _updateStatus(false);
+      // Default to online if check fails
+      _updateStatus(true);
     }
   }
 
   /// Update connectivity status based on results
   void _updateConnectivityStatus(List<ConnectivityResult> results) {
-    // Consider online if we have WiFi, mobile data, or ethernet
-    final isOnline = results.any((result) =>
-        result == ConnectivityResult.wifi ||
-        result == ConnectivityResult.mobile ||
-        result == ConnectivityResult.ethernet);
+    // Consider online if we have ANY connection result that isn't 'none'
+    // This is more robust for VPNs or 'other' Desktop connections
+    final isOnline = results.any((result) => result != ConnectivityResult.none);
 
     _updateStatus(isOnline);
   }

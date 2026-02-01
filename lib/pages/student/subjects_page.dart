@@ -3,10 +3,14 @@ import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
+import 'dart:convert';
 
 class SubjectsPage extends StatefulWidget {
   final Stream<QuerySnapshot>? sectionsStream;
-  const SubjectsPage({super.key, this.sectionsStream});
+  final QuerySnapshot? initialSectionsSnapshot;
+
+  final int? initialTabIndex;
+  const SubjectsPage({super.key, this.sectionsStream, this.initialSectionsSnapshot, this.initialTabIndex});
 
   @override
   State<SubjectsPage> createState() => _SubjectsPageState();
@@ -15,37 +19,164 @@ class SubjectsPage extends StatefulWidget {
 class _SubjectsPageState extends State<SubjectsPage> {
   bool _isLoading = true;
   List<Map<String, String>> _subjects = [];
+  Map<String, Map<String, dynamic>> _teacherProfiles = {};
 
   StreamSubscription? _sectionsSub;
+  StreamSubscription? _teachersSub;
 
   @override
   void initState() {
     super.initState();
-    _initListener();
+    
+    if (widget.initialSectionsSnapshot != null) {
+      _processSections(widget.initialSectionsSnapshot!);
+      _isLoading = false;
+    }
+    
+    // Only start active listener if we don't have data yet OR if an external stream is provided
+    if (widget.sectionsStream != null || widget.initialSectionsSnapshot == null) {
+      _initListener();
+    }
+
+    // Safety timeout
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant SubjectsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Refresh view if new data is passed from parent (Real-time sync)
+    if (widget.initialSectionsSnapshot != oldWidget.initialSectionsSnapshot) {
+      if (widget.initialSectionsSnapshot != null) {
+        _processSections(widget.initialSectionsSnapshot!);
+        _isLoading = false;
+      }
+    }
   }
 
   @override
   void dispose() {
     _sectionsSub?.cancel();
+    _studentSub?.cancel();
+    _teachersSub?.cancel();
     super.dispose();
   }
+
+  // Track current section IDs to avoid unnecessary re-subscriptions
+  List<String> _currentSectionIds = [];
+  StreamSubscription? _studentSub;
 
   void _initListener() {
     if (widget.sectionsStream != null) {
       _sectionsSub = widget.sectionsStream!.listen((snapshot) {
         _processSections(snapshot);
       });
-    } else {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
-      _sectionsSub = FirebaseFirestore.instance
-          .collection('sections')
-          .where('studentUids', arrayContains: user.uid)
-          .snapshots()
-          .listen((snapshot) {
-        _processSections(snapshot);
-      });
+      return;
     }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
+
+    // Listen to Profile to get Section IDs
+    if (_subjects.isEmpty) {
+      setState(() => _isLoading = true);
+    }
+    
+    _studentSub = FirebaseFirestore.instance
+        .collection('students')
+        .doc(user.uid)
+        .snapshots()
+        .listen((doc) {
+      if (!mounted || !doc.exists) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+      
+      final data = doc.data();
+      final sections = List<String>.from(data?['sections'] ?? []);
+      _updateSectionsSubscription(sections);
+    }, onError: (e) {
+      debugPrint("Error listening to student profile: $e");
+      if (mounted) setState(() => _isLoading = false);
+    });
+  }
+
+  void _updateSectionsSubscription(List<String> newSectionIds) {
+    // If lists are same, usually we return. BUT if we are still loading and list is empty,
+    // we must clear the loading flag!
+    if (_areListsEqual(_currentSectionIds, newSectionIds)) {
+      if (_isLoading && newSectionIds.isEmpty) {
+        if (mounted) setState(() => _isLoading = false);
+      }
+      return;
+    }
+    
+    _currentSectionIds = newSectionIds;
+    _sectionsSub?.cancel();
+
+    if (newSectionIds.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _subjects = [];
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+
+    // Filter out empty/null IDs just in case
+    final idsToQuery = newSectionIds.where((id) => id.isNotEmpty).take(10).toList();
+    
+    if (idsToQuery.isEmpty) {
+       if (mounted) setState(() => _isLoading = false);
+       return;
+    }
+
+    _sectionsSub = FirebaseFirestore.instance
+        .collection('sections')
+        .where(FieldPath.documentId, whereIn: idsToQuery)
+        .snapshots()
+        .listen((snapshot) {
+      _processSections(snapshot);
+    }, onError: (e) {
+      debugPrint('Error loading sections: $e');
+      if (mounted) setState(() => _isLoading = false);
+    });
+  }
+
+  void _listenToTeachers(List<String> uids) {
+    if (uids.isEmpty) return;
+
+    _teachersSub?.cancel();
+    _teachersSub = FirebaseFirestore.instance
+        .collection('teachers')
+        .where(FieldPath.documentId, whereIn: uids)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      final Map<String, Map<String, dynamic>> updatedProfiles = {};
+      for (var doc in snapshot.docs) {
+        updatedProfiles[doc.id] = doc.data();
+      }
+      setState(() {
+        _teacherProfiles = updatedProfiles;
+      });
+    });
+  }
+
+  bool _areListsEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _processSections(QuerySnapshot snapshot) {
@@ -77,6 +208,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 'title': subject,
                 'schedule': timeSlot,
                 'teacher': item['teacherName'] as String? ?? '',
+                'teacherUid': item['teacherUid'] as String? ?? '',
                 'semester': semester,
               };
             }
@@ -89,6 +221,17 @@ class _SubjectsPageState extends State<SubjectsPage> {
       setState(() {
         _subjects = groupedSubjects.values.toList();
         _isLoading = false;
+        
+        // Fetch teacher profiles
+        final teacherUids = _subjects
+            .map((s) => s['teacherUid'])
+            .where((uid) => uid != null && uid.isNotEmpty)
+            .cast<String>()
+            .toSet()
+            .toList();
+        if (teacherUids.isNotEmpty) {
+          _listenToTeachers(teacherUids);
+        }
       });
     }
   }
@@ -109,6 +252,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
       color: Colors.grey[50],
       child: DefaultTabController(
         length: 2,
+        initialIndex: widget.initialTabIndex ?? 0,
         child: Column(
           children: [
             PreferredSize(
@@ -188,6 +332,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
               s['title'] ?? '',
               s['schedule'] ?? '',
               s['teacher'] ?? '',
+              s['teacherUid'] ?? '',
             ),
           );
         },
@@ -200,7 +345,12 @@ class _SubjectsPageState extends State<SubjectsPage> {
       String title,
       String schedule,
       String teacher,
+      String teacherUid,
       ) {
+    final teacherProfile = _teacherProfiles[teacherUid];
+    final String? thumbnail = teacherProfile?['profileImageThumbnail'];
+    final String? imageUrl = teacherProfile?['profileImageUrl'];
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -264,7 +414,22 @@ class _SubjectsPageState extends State<SubjectsPage> {
           const SizedBox(height: 8),
           Row(
             children: [
-              Icon(Icons.person_outline, size: 18, color: HexColor("#116754")),
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 1.0),
+                ),
+                child: CircleAvatar(
+                  radius: 12,
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  backgroundImage: thumbnail != null
+                      ? MemoryImage(base64Decode(thumbnail))
+                      : (imageUrl != null ? NetworkImage(imageUrl) : null) as ImageProvider?,
+                  child: (thumbnail == null && imageUrl == null)
+                      ? Icon(Icons.person_outline, size: 14, color: HexColor("#116754"))
+                      : null,
+                ),
+              ),
               const SizedBox(width: 8),
               Text(
                 teacher,

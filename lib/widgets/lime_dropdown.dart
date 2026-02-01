@@ -3,20 +3,26 @@ import 'package:hexcolor/hexcolor.dart';
 
 class LIMEDropdown<T> extends StatefulWidget {
   final String label;
+  final String? hint;
   final T? value;
   final List<DropdownMenuItem<T>> items;
   final ValueChanged<T?> onChanged;
   final Color? arrowColor;
   final bool enabled;
+  final bool showLabel;
+  final bool compact;
 
   const LIMEDropdown({
     super.key,
     required this.label,
+    this.hint,
     required this.value,
     required this.items,
     required this.onChanged,
     this.arrowColor,
     this.enabled = true,
+    this.showLabel = true,
+    this.compact = false,
   });
 
   @override
@@ -71,8 +77,8 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
               showWhenUnlinked: false,
               offset: Offset(0, size.height + 4),
               child: Material(
-                elevation: 12,
-                shadowColor: Colors.black26,
+                elevation: 8,
+                shadowColor: Colors.black12,
                 borderRadius: BorderRadius.circular(12),
                 color: Colors.white,
                 child: Container(
@@ -88,7 +94,7 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
                       maxHeight: availableHeight,
                     ),
                     child: ListView.builder(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 6),
                       shrinkWrap: true,
                       itemCount: widget.items.length,
                       itemBuilder: (context, index) {
@@ -96,10 +102,19 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
                         final selected = item.value == widget.value;
                         return ListTile(
                           dense: true,
-                          title: item.child,
+                          visualDensity: VisualDensity.compact,
+                          title: DefaultTextStyle(
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: selected ? HexColor("#116754") : Colors.black87,
+                              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                            ),
+                            child: item.child,
+                          ),
                           selected: selected,
                           selectedTileColor: HexColor("#116754").withValues(alpha: 0.05),
-                          trailing: selected ? Icon(Icons.check, size: 18, color: HexColor("#116754")) : null,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                          trailing: selected ? Icon(Icons.check, size: 16, color: HexColor("#116754")) : null,
                           onTap: () {
                             widget.onChanged(item.value);
                             _removeEntry();
@@ -121,7 +136,7 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
 
   @override
   Widget build(BuildContext context) {
-    String displayValue = '';
+    String displayValue = widget.hint ?? widget.label;
     try {
       if (widget.value != null) {
         final selectedItem = widget.items.firstWhere((i) => i.value == widget.value);
@@ -135,29 +150,56 @@ class _LIMEDropdownState<T> extends State<LIMEDropdown<T>> {
       link: _link,
       child: InkWell(
         key: _targetKey,
-        borderRadius: BorderRadius.circular(8),
         onTap: widget.enabled ? _toggle : null,
-        child: InputDecorator(
-          decoration: InputDecoration(
-            labelText: widget.label,
-            enabled: widget.enabled,
-            border: const OutlineInputBorder(),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        borderRadius: BorderRadius.circular(widget.compact ? 12 : 8),
+        child: Container(
+          padding: EdgeInsets.symmetric(
+            horizontal: 16, 
+            vertical: widget.compact ? 10 : 12
+          ),
+          decoration: BoxDecoration(
+            color: widget.compact ? Colors.grey[50] : Colors.white,
+            borderRadius: BorderRadius.circular(widget.compact ? 12 : 8),
+            border: Border.all(
+              color: widget.enabled ? Colors.grey[300]! : Colors.grey[100]!,
+            ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: Text(
-                  displayValue,
-                  style: TextStyle(
-                    color: widget.value == null ? Colors.grey[600] : Colors.black,
-                    fontSize: 16,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (widget.showLabel && !widget.compact) ...[
+                      Text(
+                        widget.label,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                    ],
+                    Text(
+                      displayValue,
+                      style: TextStyle(
+                        color: widget.value == null ? (widget.compact ? Colors.grey[600] : Colors.grey[400]) : Colors.black87,
+                        fontSize: widget.compact ? 14 : 15,
+                        fontWeight: widget.value != null ? FontWeight.w500 : FontWeight.normal,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
-              Icon(Icons.arrow_drop_down, color: widget.arrowColor ?? HexColor("#116754")),
+              Icon(
+                Icons.keyboard_arrow_down, 
+                size: widget.compact ? 20 : 24,
+                color: widget.arrowColor ?? HexColor("#116754")
+              ),
             ],
           ),
         ),

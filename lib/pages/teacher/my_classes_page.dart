@@ -1,9 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:lime/pages/teacher/section_detail_page.dart';
+import 'package:lime/widgets/lime_dropdown.dart';
 
 class MyClassesPage extends StatefulWidget {
   final Stream<List<DocumentSnapshot>>? sectionsStream;
@@ -21,6 +28,7 @@ class MyClassesPageState extends State<MyClassesPage> {
   bool _isLoading = true;
   String? _teacherType;
   String? _teacherName;
+  Map<String, String?> _sectionThumbnails = {};
   
   // Tour Keys
   final GlobalKey _firstSectionKey = GlobalKey();
@@ -45,7 +53,7 @@ class MyClassesPageState extends State<MyClassesPage> {
       context,
       MaterialPageRoute(
         builder: (context) => const SectionDetailPage(
-          sectionName: "Demo Class",
+          sectionName: "[TUTORIAL] Demo Class",
           startGradeTour: true,
         ),
       ),
@@ -61,8 +69,8 @@ class MyClassesPageState extends State<MyClassesPage> {
   void startClassesTour() {
     // Load DEMO MODE: Create a fake section with dummy data for practice
     setState(() {
-      _sections = ['Demo Section - Grade 10-A'];
-      _ownedSections = ['Demo Section - Grade 10-A'];
+      _sections = ['[TUTORIAL] Demo Section - Grade 10-A'];
+      _ownedSections = ['[TUTORIAL] Demo Section - Grade 10-A'];
       _teacherType = 'Adviser';
       _teacherName = 'Demo Adviser';
       _isDemoMode = true;
@@ -75,7 +83,7 @@ class MyClassesPageState extends State<MyClassesPage> {
         context,
         MaterialPageRoute(
           builder: (context) => const SectionDetailPage(
-            sectionName: "Demo Section - Grade 10-A",
+            sectionName: "[TUTORIAL] Demo Section - Grade 10-A",
             startClassesTour: true,
           ),
         ),
@@ -86,8 +94,8 @@ class MyClassesPageState extends State<MyClassesPage> {
   void startTeachersTour() {
     // Load DEMO MODE: Create a fake section with dummy data for practice
     setState(() {
-      _sections = ['Demo Section - Grade 10-A'];
-      _ownedSections = ['Demo Section - Grade 10-A'];
+      _sections = ['[TUTORIAL] Demo Section - Grade 10-A'];
+      _ownedSections = ['[TUTORIAL] Demo Section - Grade 10-A'];
       _teacherType = 'Adviser';
       _teacherName = 'Demo Adviser';
       _isDemoMode = true;
@@ -100,7 +108,7 @@ class MyClassesPageState extends State<MyClassesPage> {
         context,
         MaterialPageRoute(
           builder: (context) => const SectionDetailPage(
-            sectionName: "Demo Section - Grade 10-A",
+            sectionName: "[TUTORIAL] Demo Section - Grade 10-A",
             startTeachersTour: true,
           ),
         ),
@@ -201,15 +209,25 @@ class MyClassesPageState extends State<MyClassesPage> {
         .map((doc) => doc.id)
         .toList();
 
+    final Map<String, String?> newThumbnails = {};
+    for (var doc in snapshots) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data != null) {
+        newThumbnails[doc.id] = data['sectionImageThumbnail'] as String?;
+      }
+    }
+
     setState(() {
       // Merge with existing lists but avoid duplicates
       _sections = ( { ..._sections, ...sectionsFromQuery } ).toList();
       _ownedSections = ( { ..._ownedSections, ...ownedFromQuery } ).toList();
+      _sectionThumbnails = { ..._sectionThumbnails, ...newThumbnails };
       _isLoading = false;
     });
   }
 
   Future<void> _saveSections() async {
+    if (_isDemoMode) return; // Prevent leaking demo data to Firestore
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -299,154 +317,358 @@ class MyClassesPageState extends State<MyClassesPage> {
     }
 
     final TextEditingController controller = TextEditingController();
-    
+    String? selectedGrade;
+    File? selectedImage;
+    String? imageThumbnail;
+
+    Future<void> pickImage(StateSetter dialogSetState) async {
+      try {
+        final ImagePicker picker = ImagePicker();
+        final XFile? image = await picker.pickImage(
+          source: ImageSource.gallery,
+          imageQuality: 70,
+        );
+
+        if (image == null) return;
+
+        File? imageToUse;
+        
+        // Try to crop the image, but if it fails, use the original
+        try {
+          final CroppedFile? croppedFile = await ImageCropper().cropImage(
+            sourcePath: image.path,
+            aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+            uiSettings: [
+              AndroidUiSettings(
+                toolbarTitle: 'Crop Section Image',
+                toolbarColor: HexColor("#116754"),
+                toolbarWidgetColor: Colors.white,
+                initAspectRatio: CropAspectRatioPreset.square,
+                lockAspectRatio: true,
+              ),
+              IOSUiSettings(
+                title: 'Crop Section Image',
+                aspectRatioLockEnabled: true,
+              ),
+            ],
+          );
+
+          if (croppedFile != null) {
+            imageToUse = File(croppedFile.path);
+          } else {
+            // User cancelled cropping, use original
+            imageToUse = File(image.path);
+          }
+        } catch (cropError) {
+          // Cropper failed, use the original image
+          debugPrint('Cropping failed, using original image: $cropError');
+          imageToUse = File(image.path);
+        }
+
+
+        // Try to compress the image to create a thumbnail
+        String? thumbnailData;
+        try {
+          final Uint8List? compressed = await FlutterImageCompress.compressWithFile(
+            imageToUse.path,
+            minWidth: 100,
+            minHeight: 100,
+            quality: 50,
+          );
+          
+          if (compressed != null) {
+            thumbnailData = base64Encode(compressed);
+          } else {
+            // Compression returned null, read file directly
+            final bytes = await imageToUse.readAsBytes();
+            thumbnailData = base64Encode(bytes);
+          }
+        } catch (compressionError) {
+          // Compression failed, read the file bytes directly
+          debugPrint('Compression failed, using uncompressed image: $compressionError');
+          try {
+            final bytes = await imageToUse.readAsBytes();
+            thumbnailData = base64Encode(bytes);
+          } catch (readError) {
+            debugPrint('Failed to read image bytes: $readError');
+            // Will proceed with null thumbnail
+          }
+        }
+        
+        dialogSetState(() {
+          selectedImage = imageToUse;
+          imageThumbnail = thumbnailData;
+        });
+      } catch (e) {
+        debugPrint('Error picking image: $e');
+        // ignore: use_build_context_synchronously
+        final messenger = ScaffoldMessenger.of(context);
+        Future.microtask(() {
+          messenger.showSnackBar(
+            SnackBar(content: Text('Failed to pick image: $e')),
+          );
+        });
+      }
+    }
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create New Section'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Set a name for your class section. This will be used by students to find and join your class.',
-              style: TextStyle(fontSize: 13, color: Colors.black54),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Section Name',
-                hintText: 'e.g., Grade 11 - STEM',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (controller.text.trim().isNotEmpty) {
-                final sectionName = controller.text.trim();
-                final user = FirebaseAuth.instance.currentUser;
-                if (user == null) return;
-
-                // CHECK: Ensure section name is unique
-                final sectionDoc = await FirebaseFirestore.instance.collection('sections').doc(sectionName).get();
-                if (sectionDoc.exists) {
-                   if (context.mounted) {
-                      showDialog(
-                        context: context,
-                        builder: (context) => Dialog(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                            maxWidth: screenWidth < 600 ? screenWidth * 0.9 : 400,
-            ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, dialogSetState) {
+          return AlertDialog(
+            title: const Text('Create New Section'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Set a name for your class section. This will be used by students to find and join your class.',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 24),
+                  // Section Image Picker (Optional)
+                  Center(
+                    child: Column(
+                      children: [
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () {
+                              debugPrint('Section image picker tapped');
+                              pickImage(dialogSetState);
+                            },
+                            borderRadius: BorderRadius.circular(50),
                             child: Container(
-                              padding: const EdgeInsets.all(36),
                               decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(28),
-                                color: Colors.white,
-                                border: Border.all(color: Colors.amber.shade200, width: 2),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: HexColor("#116754").withValues(alpha: 0.3),
+                                  width: 2,
+                                ),
                               ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
+                              child: Stack(
                                 children: [
-                                   Container(
-                                     padding: const EdgeInsets.all(16),
-                                     decoration: BoxDecoration(
-                                       color: Colors.amber.shade50,
-                                       shape: BoxShape.circle,
-                                     ),
-                                     child: Icon(Icons.error_outline_rounded, size: 48, color: Colors.amber.shade700),
-                                   ),
-                                   const SizedBox(height: 24),
-                                   Text(
-                                     'Name Taken',
-                                     style: TextStyle(
-                                       fontSize: 22, 
-                                       fontWeight: FontWeight.bold,
-                                       color: Colors.amber.shade900,
-                                     ),
-                                   ),
-                                   const SizedBox(height: 16),
-                                   Text(
-                                     'The section name "$sectionName" has already been taken.',
-                                     textAlign: TextAlign.center,
-                                     style: const TextStyle(fontSize: 16, height: 1.5),
-                                   ),
-                                   const SizedBox(height: 8),
-                                   Text(
-                                     'Please choose a different name.',
-                                     textAlign: TextAlign.center,
-                                     style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                                   ),
-                                   const SizedBox(height: 24),
-                                   SizedBox(
-                                     width: double.infinity,
-                                     child: ElevatedButton(
-                                       onPressed: () => Navigator.pop(context),
-                                       style: ElevatedButton.styleFrom(
-                                         backgroundColor: Colors.amber.shade700,
-                                         foregroundColor: Colors.white,
-                                         padding: const EdgeInsets.symmetric(vertical: 12),
-                                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                       ),
-                                       child: const Text('Try Again', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                                     ),
-                                   ),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.black, width: 2.0),
+                                    ),
+                                    child: CircleAvatar(
+                                      radius: 50,
+                                      backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                                      backgroundImage: selectedImage != null
+                                          ? FileImage(selectedImage!)
+                                          : null,
+                                      child: selectedImage == null
+                                          ? Icon(
+                                              Icons.class_,
+                                              size: 50,
+                                              color: HexColor("#116754"),
+                                            )
+                                          : null,
+                                    ),
+                                  ),
+                                  Positioned(
+                                    bottom: 0,
+                                    right: 0,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: HexColor("#116754"),
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: Colors.white, width: 2),
+                                      ),
+                                      child: const Icon(
+                                        Icons.camera_alt,
+                                        size: 16,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
                           ),
                         ),
-                      );
-                   }
-                   return; // Stop creation
-                }
-
-                // Add to local state (for instant feedback, though listener will catch it too)
-                setState(() {
-                  if (!_sections.contains(sectionName)) _sections.add(sectionName);
-                  if (!_ownedSections.contains(sectionName)) _ownedSections.add(sectionName);
-                });
-                await _saveSections();
-                
-                // Set adviserUid, adviserName, and studentUids in section document
-                await FirebaseFirestore.instance.collection('sections').doc(sectionName).set({
-                  'adviserUid': user.uid,
-                  'adviserName': _teacherName,
-                  'studentUids': [],
-                  'teacherUids': [], // Fix: Ensure query filter works even if empty
-                }, SetOptions(merge: true));
-
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  // Auto-navigate to the new section
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => SectionDetailPage(sectionName: sectionName),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap to add section image (optional)',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                        ),
+                      ],
                     ),
-                  );
-                }
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: HexColor("#116754"),
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  const SizedBox(height: 24),
+                  LIMEDropdown<String>(
+                    label: 'Grade Level',
+                    value: selectedGrade,
+                    items: const [
+                      DropdownMenuItem(value: 'Grade 11', child: Text('Grade 11')),
+                      DropdownMenuItem(value: 'Grade 12', child: Text('Grade 12')),
+                    ],
+                    onChanged: (value) => dialogSetState(() => selectedGrade = value),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      labelText: 'Section Name',
+                      hintText: 'e.g., AMBER',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            child: const Text('Create Section', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel', style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.bold)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (selectedGrade == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please select a Grade Level')),
+                    );
+                    return;
+                  }
+                  
+                  if (controller.text.trim().isNotEmpty) {
+                    final rawName = controller.text.trim().toUpperCase();
+                    final gradeNum = selectedGrade!.replaceAll('Grade ', '');
+                    // Auto-format: "11 - AMBER"
+                    final sectionName = "$gradeNum - $rawName"; 
+
+                    final user = FirebaseAuth.instance.currentUser;
+                    if (user == null) return;
+
+                    // CHECK: Ensure section name is unique
+                    final sectionDoc = await FirebaseFirestore.instance.collection('sections').doc(sectionName).get();
+                    if (sectionDoc.exists) {
+                       if (context.mounted) {
+                          showDialog(
+                            context: context,
+                            builder: (context) => Dialog(
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: screenWidth < 600 ? screenWidth * 0.9 : 400,
+                  ),
+                                child: Container(
+                                  padding: const EdgeInsets.all(36),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(28),
+                                    color: Colors.white,
+                                    border: Border.all(color: Colors.amber.shade200, width: 2),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                       Container(
+                                         padding: const EdgeInsets.all(16),
+                                         decoration: BoxDecoration(
+                                           color: Colors.amber.shade50,
+                                           shape: BoxShape.circle,
+                                         ),
+                                         child: Icon(Icons.error_outline_rounded, size: 48, color: Colors.amber.shade700),
+                                       ),
+                                       const SizedBox(height: 24),
+                                       Text(
+                                         'Name Taken',
+                                         style: TextStyle(
+                                           fontSize: 22, 
+                                           fontWeight: FontWeight.bold,
+                                           color: Colors.amber.shade900,
+                                         ),
+                                       ),
+                                       const SizedBox(height: 16),
+                                       Text(
+                                         'The section name "$sectionName" has already been taken.',
+                                         textAlign: TextAlign.center,
+                                         style: const TextStyle(fontSize: 16, height: 1.5),
+                                       ),
+                                       const SizedBox(height: 8),
+                                       Text(
+                                         'Please choose a different name.',
+                                         textAlign: TextAlign.center,
+                                         style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                                       ),
+                                       const SizedBox(height: 24),
+                                       SizedBox(
+                                         width: double.infinity,
+                                         child: ElevatedButton(
+                                           onPressed: () => Navigator.pop(context),
+                                           style: ElevatedButton.styleFrom(
+                                             backgroundColor: Colors.amber.shade700,
+                                             foregroundColor: Colors.white,
+                                             padding: const EdgeInsets.symmetric(vertical: 12),
+                                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                           ),
+                                           child: const Text('Try Again', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                         ),
+                                       ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                       }
+                       return; // Stop creation
+                    }
+
+                    // Add to local state (for instant feedback, though listener will catch it too)
+                    setState(() {
+                      if (!_sections.contains(sectionName)) _sections.add(sectionName);
+                      if (!_ownedSections.contains(sectionName)) _ownedSections.add(sectionName);
+                    });
+                    await _saveSections();
+                    
+                    // Set adviserUid, adviserName, studentUids, and optional image in section document
+                    final Map<String, dynamic> sectionData = {
+                      'adviserUid': user.uid,
+                      'adviserName': _teacherName,
+                      'gradeLevel': selectedGrade,
+                      'studentUids': [],
+                      'teacherUids': [],
+                    };
+
+                    // Add image thumbnail if selected
+                    if (imageThumbnail != null) {
+                      sectionData['sectionImageThumbnail'] = imageThumbnail;
+                    }
+
+                    await FirebaseFirestore.instance.collection('sections').doc(sectionName).set(
+                      sectionData,
+                      SetOptions(merge: true),
+                    );
+
+                    if (context.mounted) {
+                      Navigator.pop(context);
+                      // Auto-navigate to the new section
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => SectionDetailPage(sectionName: sectionName),
+                        ),
+                      );
+                    }
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: HexColor("#116754"),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Create Section', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
@@ -761,17 +983,37 @@ class MyClassesPageState extends State<MyClassesPage> {
           ),
           child: Row(
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: (isOwned ? HexColor("#116754") : Colors.green).withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  isOwned ? Icons.class_ : Icons.school,
-                  color: isOwned ? HexColor("#116754") : Colors.green[700],
-                  size: 32,
-                ),
+              Builder(
+                builder: (context) {
+                  final String? thumbnail = _sectionThumbnails[section];
+                  final Uint8List? thumbBytes = thumbnail != null ? base64Decode(thumbnail) : null;
+                  
+                  return Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: (isOwned ? HexColor("#116754") : Colors.green).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.black, width: 1.5),
+                      ),
+                      child: CircleAvatar(
+                        radius: 28,
+                        backgroundColor: Colors.transparent,
+                        backgroundImage: thumbBytes != null ? MemoryImage(thumbBytes) : null,
+                        child: thumbBytes == null
+                            ? Icon(
+                                isOwned ? Icons.class_ : Icons.school,
+                                color: isOwned ? HexColor("#116754") : Colors.green[700],
+                                size: 32,
+                              )
+                            : null,
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(width: 16),
               Expanded(

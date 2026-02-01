@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:image_picker/image_picker.dart';
@@ -23,7 +24,9 @@ import '../../widgets/delete_account_dialog.dart';
 import '../../widgets/connectivity_indicator.dart';
 import '../common/processing_deletion_page.dart';
 import '../common/help_page.dart';
+import '../../utils/notification_helper.dart';
 import '../../widgets/guide_pointer.dart';
+import '../../widgets/change_password_dialog.dart';
 
 class ProfileTeacherPage extends StatefulWidget {
   const ProfileTeacherPage({super.key});
@@ -38,12 +41,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   bool _isLoading = true;
   bool _isLoadingProfile = false; // Guard for recursion
   StreamSubscription? _profileSubscription;
-  Stream<List<DocumentSnapshot>>? _sectionsStream;
-  final StreamController<List<DocumentSnapshot>> _sectionsStreamController = StreamController<List<DocumentSnapshot>>.broadcast();
-  StreamSubscription? _adviserSub;
-  StreamSubscription? _teacherSub;
-  List<DocumentSnapshot> _adviserDocs = [];
-  List<DocumentSnapshot> _teacherDocs = [];
+  StreamSubscription? _notificationSub;
   final List<Widget?> _pages = List.filled(6, null);
 
   final TextEditingController _nameController = TextEditingController();
@@ -53,6 +51,8 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   File? _profileImage;
   String? _profileImageUrl;
   String? _profileImageThumbnail;
+  Uint8List? _thumbnailBytes;
+  List<String> _advisorySections = [];
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -70,7 +70,6 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   // Navigation Keys - Mobile (NavigationBar)
   final GlobalKey _navScheduleKey = GlobalKey();
   final GlobalKey _navClassesKey = GlobalKey();
-  final GlobalKey _navInboxKey = GlobalKey();
   final GlobalKey _navProfileKey = GlobalKey();
 
   // Navigation Keys - Desktop (Sidebar)
@@ -89,80 +88,46 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   @override
   void initState() {
     super.initState();
-    _sectionsStream = _sectionsStreamController.stream;
     _loadProfileData();
+    _initNotificationListener();
   }
 
-
-  void _initSectionsStream() {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    _adviserSub?.cancel();
-    _teacherSub?.cancel();
-
-    // Query 1: Where I am the adviser
-    _adviserSub = _firestore.collection('sections')
-        .where('adviserUid', isEqualTo: user.uid)
-        .snapshots()
-        .listen((snap) {
-      _adviserDocs = snap.docs;
-      _emitMergedSections();
-    });
-
-    // Query 2: Where I am a subject teacher
-    _teacherSub = _firestore.collection('sections')
-        .where('teacherUids', arrayContains: user.uid)
-        .snapshots()
-        .listen((snap) {
-      _teacherDocs = snap.docs;
-      _emitMergedSections();
-    });
-  }
-
-  void _emitMergedSections() {
-    final unique = {for (var doc in [..._adviserDocs, ..._teacherDocs]) doc.id: doc};
-    if (!_sectionsStreamController.isClosed) {
-      _sectionsStreamController.add(unique.values.toList());
-    }
-  }
 
   Widget _getPage(int index) {
     if (_pages[index] != null) return _pages[index]!;
+
 
     switch (index) {
       case 0:
         _pages[index] = TeacherSchedulePage(
           key: _schedulePageKey,
-          sectionsStream: _sectionsStream,
+          // sectionsStream: null - let page create its own listener
         );
         break;
       case 1:
         _pages[index] = MyClassesPage(
           key: _myClassesPageKey,
-          sectionsStream: _sectionsStream,
+          // sectionsStream: null - let page create its own listener
         );
         break;
       case 2:
         _pages[index] = TeacherHomePage(
           key: _homePageKey,
-          onNavigate: _onItemTapped,
-          sectionsStream: _sectionsStream,
+          onNavigate: (i, {initialTab}) => _onItemTapped(i, initialTab: initialTab),
+          // sectionsStream: null - let page create its own listener
           // Pass mobile keys
           scheduleKey: _navScheduleKey,
           classesKey: _navClassesKey,
-          inboxKey: _navInboxKey,
           profileKey: _navProfileKey,
           // Pass desktop keys
           sidebarScheduleKey: _sidebarScheduleKey,
           sidebarClassesKey: _sidebarClassesKey,
-          sidebarInboxKey: _sidebarInboxKey,
           sidebarProfileKey: _sidebarProfileKey,
           // Optimized data sharing
           userName: _nameController.text,
-          profileImageUrl: _profileImageUrl,
-          profileImageThumbnail: _profileImageThumbnail,
           profileImagePath: _profileImage?.path,
+          teacherType: _selectedTeacherType,
+          profileThumbnailBytes: _thumbnailBytes,
           userStream: _firestore.collection('teachers').doc(_auth.currentUser?.uid).snapshots(),
         );
         break;
@@ -184,12 +149,34 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
               _myClassesPageKey.currentState?.startGradeTour();
             });
           },
-          onStartClassesTour: () {
+          onStartClassesTour: _selectedTeacherType == 'Subject Teacher' ? null : () {
             GuidePointer.dismiss();
             setState(() => _selectedIndex = 1);
             if (_pageController.hasClients) _pageController.jumpToPage(1);
             WidgetsBinding.instance.addPostFrameCallback((_) {
               _myClassesPageKey.currentState?.startClassesTour();
+            });
+          },
+          onStartTeachersTour: _selectedTeacherType == 'Subject Teacher' ? null : () {
+            GuidePointer.dismiss();
+            setState(() => _selectedIndex = 1);
+            if (_pageController.hasClients) _pageController.jumpToPage(1);
+            
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Starting "How to Manage Teachers" tour...')),
+            );
+            
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+               _myClassesPageKey.currentState?.startTeachersTour();
+            });
+          },
+          onStartScheduleTour: () {
+            GuidePointer.dismiss();
+            setState(() => _selectedIndex = 0);
+            if (_pageController.hasClients) _pageController.jumpToPage(0);
+
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _schedulePageKey.currentState?.startScheduleTour();
             });
           },
           userType: 'Teacher',
@@ -235,7 +222,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
         });
       },
       // Restricted Tours - Only for Advisers
-      onStartClassesTour: () {
+      onStartClassesTour: _selectedTeacherType == 'Subject Teacher' ? null : () {
         GuidePointer.dismiss();
         setState(() {
           _selectedIndex = 1; // My Classes
@@ -247,7 +234,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
         });
       },
 
-      onStartTeachersTour: () {
+      onStartTeachersTour: _selectedTeacherType == 'Subject Teacher' ? null : () {
         GuidePointer.dismiss();
         setState(() {
           _selectedIndex = 1; // My Classes (Teachers tab)
@@ -274,6 +261,17 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
           _schedulePageKey.currentState?.startScheduleTour();
         });
       },
+      onStartInboxTour: () {
+        GuidePointer.dismiss();
+        setState(() {
+          _selectedIndex = 4; // Inbox
+        });
+        if (_pageController.hasClients) _pageController.jumpToPage(4);
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _inboxPageKey.currentState?.startInboxTour();
+        });
+      },
       userType: 'Teacher',
     );
 
@@ -289,16 +287,14 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   @override
   void dispose() {
     _profileSubscription?.cancel();
-    _adviserSub?.cancel();
-    _teacherSub?.cancel();
-    _sectionsStreamController.close();
+    _notificationSub?.cancel();
     _nameController.dispose();
     _accessCodeController.dispose();
     _pageController.dispose();
     super.dispose();
   }
 
-  void _onItemTapped(int index) {
+  void _onItemTapped(int index, {int? initialTab}) {
     if (_selectedIndex == index) return;
     
     // Dismiss active tours and reset demo modes on tabs
@@ -331,6 +327,39 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
       _selectedIndex = index;
     });
   }
+  void _initNotificationListener() {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    bool isFirstLoad = true;
+    _notificationSub?.cancel();
+    _notificationSub = _firestore
+        .collection('notifications')
+        .where('to', isEqualTo: user.uid)
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .listen((snap) {
+          if (!mounted) return;
+          
+          if (isFirstLoad) {
+            isFirstLoad = false;
+            return;
+          }
+
+          for (var change in snap.docChanges) {
+            if (change.type == DocumentChangeType.added) {
+              final data = change.doc.data();
+              if (data != null) {
+                // Show pop-out toast globally
+                NotificationHelper.showInfo(context, data['body'] ?? data['title'] ?? 'New Notification');
+                // Mark as read immediately - Removed to allow user to see unread badge
+                // change.doc.reference.update({'read': true});
+              }
+            }
+          }
+        });
+  }
+
   Future<void> _loadProfileData() async {
     final user = _auth.currentUser;
     if (user == null || _isLoadingProfile) {
@@ -377,6 +406,11 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
               _detailsSubmitted = detailsSubmitted;
               _profileImageUrl = imgUrl;
               _profileImageThumbnail = data['profileImageThumbnail'] as String?;
+              if (_profileImageThumbnail != null) {
+                _thumbnailBytes = base64Decode(_profileImageThumbnail!);
+              } else {
+                _thumbnailBytes = null;
+              }
 
               if (imgPath != null && File(imgPath).existsSync()) {
                 _profileImage = File(imgPath);
@@ -386,21 +420,27 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
               } finally {
                 _isLoading = false;
+                // Force all pages to rebuild with new profile data by clearing cache
+                _pages.fillRange(0, _pages.length, null);
                 // Update pages configuration based on new role data
                 _updatePages();
-                _initSectionsStream(); // Refresh stream listeners
               }
           });
         }
       }, onError: (e) {
-        _isLoadingProfile = false;
         debugPrint('Error listening to profile: $e');
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
-        }
+        if (mounted) setState(() => _isLoading = false);
       });
+
+      // Also fetch advisory sections
+      final sectionsSnap = await _firestore.collection('sections')
+          .where('adviserUid', isEqualTo: user.uid)
+          .get();
+      if (mounted) {
+        setState(() {
+          _advisorySections = sectionsSnap.docs.map((d) => d.id).toList()..sort();
+        });
+      }
     } catch (e) {
       debugPrint('Error starting profile listener: $e');
       if (mounted) setState(() => _isLoading = false);
@@ -409,13 +449,15 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
   Future<String?> _generateThumbnail(File file) async {
     try {
+      // Desktop (Windows/Linux/Mac): Read bytes directly since compression plugin is mobile-only
       if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        // flutter_image_compress might not support desktop fully or requires specific setup.
-        // For now, on Desktop, we might skip thumbnail or just read small file.
-        // But let's try reading it and if it's small enough, use it directly?
-        // Or just skip for now and rely on local path.
-        // Actually, let's try to just return null for now to be safe on Desktop unless we validity it.
-        return null; 
+        final bytes = await file.readAsBytes();
+        // Limit to ~500KB to avoid Firestore document limit (1MB)
+        if (bytes.length > 500 * 1024) {
+          debugPrint("Image too large for Firestore thumbnail: ${bytes.length} bytes");
+          return null; 
+        }
+        return base64Encode(bytes);
       }
       
       final result = await FlutterImageCompress.compressWithFile(
@@ -535,37 +577,38 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
     if (selectedFile != null) {
       if (!mounted) return null;
-      // Only crop on non-desktop platforms as image_cropper handles them better
-      if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
-        final croppedFile = await ImageCropper().cropImage(
-          sourcePath: selectedFile.path,
-          aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
-          uiSettings: [
-            AndroidUiSettings(
-              toolbarTitle: 'Crop Profile Photo',
-              toolbarColor: HexColor("#116754"),
-              toolbarWidgetColor: Colors.white,
-              initAspectRatio: CropAspectRatioPreset.square,
-              lockAspectRatio: true,
-              hideBottomControls: true,
-            ),
-            IOSUiSettings(
-              title: 'Crop Profile Photo',
-            ),
-            WebUiSettings(
-              context: context,
-              // Removed problematic size and presentStyle for now to fix build
-            ),
-          ],
-        );
-        if (croppedFile != null) {
-          return File(croppedFile.path);
-        }
-      } else {
+
+      // Skip cropping on Desktop (not fully supported by plugin)
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
         return selectedFile;
       }
+      
+      final croppedFile = await ImageCropper().cropImage(
+        sourcePath: selectedFile.path,
+        aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+        uiSettings: [
+          AndroidUiSettings(
+            toolbarTitle: 'Crop Profile Photo',
+            toolbarColor: HexColor("#116754"),
+            toolbarWidgetColor: Colors.white,
+            initAspectRatio: CropAspectRatioPreset.square,
+            lockAspectRatio: true,
+            hideBottomControls: true,
+          ),
+          IOSUiSettings(
+            title: 'Crop Profile Photo',
+          ),
+          WebUiSettings(
+            context: context,
+          ),
+        ],
+      );
+      
+      if (croppedFile != null) {
+        return File(croppedFile.path);
+      }
     }
-    return null;
+    return selectedFile;
   }
 
   // ================= SUBMIT PROFILE =================
@@ -677,8 +720,17 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
     Navigator.pushNamedAndRemoveUntil(context, '/signin', (_) => false);
   }
 
+  // ================= CHANGE PASSWORD =================
+  void _changePassword() {
+    showDialog(
+      context: context,
+      builder: (context) => const ChangePasswordDialog(),
+    );
+  }
+
   void _showEditProfileSheet() {
     final TextEditingController nameEditController = TextEditingController(text: _nameController.text);
+    String? tempTeacherType = _selectedTeacherType;
     File? tempProfileImage = _profileImage; // Temporary holding for image
 
     showDialog(
@@ -712,8 +764,14 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                             backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                             backgroundImage: tempProfileImage != null
                                 ? FileImage(tempProfileImage!)
-                                : (_profileImageUrl != null ? NetworkImage(_profileImageUrl!) : null) as ImageProvider?,
-                            child: (tempProfileImage == null && _profileImageUrl == null)
+                                : (_thumbnailBytes != null
+                                    ? MemoryImage(_thumbnailBytes!)
+                                    : (_profileImageThumbnail != null
+                                        ? MemoryImage(base64Decode(_profileImageThumbnail!))
+                                        : (_profileImageUrl != null
+                                            ? NetworkImage(_profileImageUrl!)
+                                            : null))) as ImageProvider?,
+                            child: (tempProfileImage == null && _thumbnailBytes == null && _profileImageThumbnail == null && _profileImageUrl == null)
                                 ? Icon(Icons.person, size: 50, color: HexColor("#116754"))
                                 : null,
                           ),
@@ -734,7 +792,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                                 decoration: BoxDecoration(
                                   color: HexColor("#116754"),
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2),
+                                  border: Border.all(color: Colors.black, width: 2),
                                 ),
                                 child: const Icon(Icons.camera_alt, size: 18, color: Colors.white),
                               ),
@@ -780,16 +838,25 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                             onPressed: () async {
                               // Save Logic
                               if (nameEditController.text.trim().isEmpty) return;
-                              setState(() {
-                                _nameController.text = nameEditController.text.trim();
-                                _profileImage = tempProfileImage; // Apply the new image
-                              });
-                              try {
-                                await _saveProfileData();
-                                if (context.mounted) Navigator.pop(context);
-                              } catch (e) {
-                                // Error handled in _saveProfileData with SnackBar
-                              }
+                                setState(() {
+                                  _nameController.text = nameEditController.text.trim();
+                                  _selectedTeacherType = tempTeacherType;
+                                  _profileImage = tempProfileImage;
+                                  
+                                  // NEW: Instant local thumbnail preview for global syncing
+                                  if (_profileImage != null) {
+                                    _thumbnailBytes = _profileImage!.readAsBytesSync();
+                                  }
+
+                                  // IMMEDIATE LOCAL PREVIEW:
+                                  _pages.fillRange(0, _pages.length, null);
+                                });
+                                try {
+                                  await _saveProfileData();
+                                  if (context.mounted) Navigator.pop(context);
+                                } catch (e) {
+                                  // Error handled
+                                }
                             },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: HexColor("#116754"),
@@ -841,105 +908,117 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
       child: Column(
         children: [
           // Facebook-style Cover and Profile Picture Header
-          // Facebook-style Cover and Profile Picture Header
-          StreamBuilder<DocumentSnapshot>(
-            stream: _firestore.collection('teachers').doc(_auth.currentUser?.uid).snapshots(),
-            builder: (context, snapshot) {
-               final data = snapshot.data?.data() as Map<String, dynamic>?;
-               final name = data?['name'] as String? ?? '';
-               final teacherType = data?['teacherType'] as String? ?? 'Teacher';
-               final imgUrl = data?['profileImageUrl'] as String?;
-               final imgThumb = data?['profileImageThumbnail'] as String?;
-
-               return Column(
-                 children: [
-                    Stack(
-                      alignment: Alignment.center,
-                      clipBehavior: Clip.none,
-                      children: [
-                        // Cover Photo Placeholder
-                        Container(
-                          height: 180,
-                          width: double.infinity,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                HexColor("#116754"),
-                                HexColor("#2a7925"),
-                              ],
-                            ),
-                          ),
-                          child: Center(
-                            child: Opacity(
-                              opacity: 0.1,
-                              child: Image.asset(
-                                'lib/pages/assets/LIME ASSETS/lime.png',
-                                height: 120,
-                                fit: BoxFit.contain,
-                              ),
-                            ),
-                          ),
-                        ),
-                        // Profile Picture
-                        Positioned(
-                          top: 110,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              shape: BoxShape.circle,
-                            ),
-                            child: CircleAvatar(
-                              radius: 65,
-                              backgroundColor: Colors.grey[200],
-                              // Prioritize local file if just picked, otherwise stream data
-                              backgroundImage: _profileImage != null
-                                  ? FileImage(_profileImage!)
-                                  : (imgThumb != null 
-                                      ? MemoryImage(base64Decode(imgThumb))
-                                      : (imgUrl != null ? NetworkImage(imgUrl) : null)) as ImageProvider?,
-                              child: (_profileImage == null && imgUrl == null && imgThumb == null)
-                                  ? Icon(Icons.person, size: 65, color: HexColor("#116754"))
-                                  : null,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    
-                    const SizedBox(height: 75), // Space for the overlapping avatar
-                    
-                    // Name and Subtitle
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Column(
-                        children: [
-                          Text(
-                            name.isNotEmpty ? name : _nameController.text, // Fallback to controller if stream empty initially
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.merriweather(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: HexColor("#116754"),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            teacherType.isNotEmpty ? teacherType : (_selectedTeacherType ?? 'Teacher'),
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.grey[600],
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
+          Column(
+            children: [
+              Stack(
+                alignment: Alignment.center,
+                clipBehavior: Clip.none,
+                children: [
+                  // Cover Photo Placeholder
+                  Container(
+                    height: 180,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          HexColor("#116754"),
+                          HexColor("#2a7925"),
                         ],
                       ),
                     ),
-                 ],
-               );
-            }
+                    child: Center(
+                      child: Opacity(
+                        opacity: 0.1,
+                        child: Image.asset(
+                          'lib/pages/assets/LIME ASSETS/lime.png',
+                          height: 120,
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Profile Picture
+                  Positioned(
+                    top: 110,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: Colors.black,
+                        shape: BoxShape.circle,
+                      ),
+                      child: CircleAvatar(
+                        key: ValueKey("${_profileImageUrl ?? _profileImageThumbnail}_${_thumbnailBytes?.length ?? 0}_${_profileImage?.path}"),
+                        radius: 65,
+                        backgroundColor: Colors.grey[200],
+                        // Prioritize local file if just picked, otherwise stream data
+                        backgroundImage: _profileImage != null
+                            ? FileImage(_profileImage!)
+                            : (_thumbnailBytes != null 
+                                ? MemoryImage(_thumbnailBytes!)
+                                : (_profileImageUrl != null ? NetworkImage(_profileImageUrl!) : null)) as ImageProvider?,
+                        child: (_profileImage == null && _profileImageUrl == null && _profileImageThumbnail == null)
+                            ? Icon(Icons.person, size: 65, color: HexColor("#116754"))
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              
+              const SizedBox(height: 75), // Space for the overlapping avatar
+              
+              // Name and Subtitle
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  children: [
+                    Text(
+                      _nameController.text.isNotEmpty ? _nameController.text : 'Name', 
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.merriweather(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: HexColor("#116754"),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _selectedTeacherType ?? 'Teacher',
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey[600],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (_advisorySections.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        alignment: WrapAlignment.center,
+                        children: _advisorySections.map((s) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: HexColor("#116754"),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            s,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        )).toList(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
           ),
           
           const SizedBox(height: 24),
@@ -967,6 +1046,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
           const SizedBox(height: 24),
           const Divider(thickness: 8, color: Color(0xFFEEEEEE)),
+
 
           // Settings List
           Padding(
@@ -999,25 +1079,6 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           _myClassesPageKey.currentState?.startGradeTour();
                         });
-                      } else if (result == 'inbox_tour') {
-                        // SPOTLIGHT the Inbox tab first, then navigate
-                        final bool isDesktop = MediaQuery.of(context).size.width > 900;
-                        final targetKey = isDesktop ? _sidebarInboxKey : _navInboxKey;
-
-                        GuidePointer.show(
-                          context,
-                          steps: [
-                            GuideStep(
-                              targetKey: targetKey,
-                              title: "Step 1: Inbox Tab",
-                              content: "Tap here to access your Inbox. You can send announcements and messages to students.",
-                              buttonLabel: "Go to Inbox",
-                            ),
-                          ],
-                          onComplete: () {
-                            _onItemTapped(4); // Navigate to Inbox after spotlight
-                          },
-                        );
                       } else if (result == 'schedule_tour') {
                         // Navigate to Schedule tab first
                         _onItemTapped(0);
@@ -1047,6 +1108,11 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                   },
                 ),
                 _buildFacebookListTile(
+                  icon: Icons.lock_outline,
+                  title: 'Change Password',
+                  onTap: _changePassword,
+                ),
+                _buildFacebookListTile(
                   icon: Icons.logout,
                   title: 'Logout',
                   onTap: _logout,
@@ -1072,26 +1138,44 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
     required VoidCallback onTap,
     Color? titleColor,
   }) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-      leading: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.grey[100],
-          shape: BoxShape.circle,
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: (titleColor ?? HexColor("#116754")),
+          width: 1.5,
         ),
-        child: Icon(icon, color: Colors.black87, size: 22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      title: Text(
-        title,
-        style: TextStyle(
-          fontSize: 17,
-          fontWeight: FontWeight.w500,
-          color: titleColor ?? Colors.black87,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+        leading: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: (titleColor ?? HexColor("#116754")).withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: titleColor ?? HexColor("#116754"), size: 22),
         ),
+        title: Text(
+          title,
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
+            color: titleColor ?? Colors.black87,
+          ),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Colors.grey),
+        onTap: onTap,
       ),
-      trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Colors.grey),
-      onTap: onTap,
     );
   }
 
@@ -1099,53 +1183,47 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
     return Column(
       children: [
         InkWell(
-          onTap: () => _onItemTapped(5),
+          onTap: () => _onItemTapped(4),
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
-            child: StreamBuilder<DocumentSnapshot>(
-              stream: _firestore.collection('teachers').doc(_auth.currentUser?.uid).snapshots(),
-              builder: (context, snapshot) {
-                final data = snapshot.data?.data() as Map<String, dynamic>?;
-                final name = data?['name'] as String? ?? 'Teacher';
-                final teacherType = data?['teacherType'] as String? ?? '';
-                final imgUrl = data?['profileImageUrl'] as String?;
-                final imgThumb = data?['profileImageThumbnail'] as String?;
-                final imgPath = data?['profileImagePath'] as String?;
-
-                return Column(
-                  children: [
-                    CircleAvatar(
-                      radius: 38,
-                      backgroundColor: Colors.white,
-                      backgroundImage: imgThumb != null 
-                          ? MemoryImage(base64Decode(imgThumb))
-                          : (imgUrl != null 
-                              ? NetworkImage(imgUrl) 
-                              : (imgPath != null && File(imgPath).existsSync() 
-                                  ? FileImage(File(imgPath)) 
-                                  : null)) as ImageProvider?,
-                      child: (imgUrl == null && imgThumb == null && (imgPath == null || !File(imgPath).existsSync()))
-                          ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
-                          : null,
-                    ),
-                    const SizedBox(height: 14),
-                    Text(
-                      name,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      teacherType,
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.8)),
-                    ),
-                  ],
-                );
-              }
+            child: Column(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black, width: 2.0),
+                  ),
+                  child: CircleAvatar(
+                    radius: 38,
+                    backgroundColor: Colors.white,
+                    backgroundImage: _thumbnailBytes != null 
+                        ? MemoryImage(_thumbnailBytes!)
+                        : (_profileImageUrl != null 
+                            ? NetworkImage(_profileImageUrl!) 
+                            : (_profileImage != null && _profileImage!.existsSync() 
+                                ? FileImage(_profileImage!) 
+                                : null)) as ImageProvider?,
+                    child: (_profileImageUrl == null && _profileImageThumbnail == null && (_profileImage == null || !_profileImage!.existsSync()))
+                        ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  _nameController.text.isNotEmpty ? _nameController.text : 'Teacher',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _selectedTeacherType ?? '',
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8)),
+                ),
+              ],
             ),
           ),
         ),
@@ -1157,45 +1235,9 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
               _menuItem(context, Icons.schedule, 'My Schedule', 0, key: _sidebarScheduleKey),
               _menuItem(context, Icons.class_, 'My Classes', 1, key: _sidebarClassesKey),
               _menuItem(context, Icons.home, 'Home', 2),
-              _menuItem(context, Icons.help_outline, 'Help', 3), // NEW
-              _menuItem(context, Icons.person, 'Profile', 5, key: _sidebarProfileKey),   // SHIFTED
-              
-              StreamBuilder<QuerySnapshot>(
-                stream: _auth.currentUser != null 
-                    ? _firestore.collection('teachers').doc(_auth.currentUser!.uid).collection('inbox').where('read', isEqualTo: false).snapshots()
-                    : null,
-                builder: (context, snapshot) {
-                  int unreadCount = 0;
-                  if (snapshot.hasData) {
-                    unreadCount = snapshot.data!.docs.length;
-                  }
-                  
-                  return _menuItem(
-                    context,
-                    Icons.inbox, 
-                    'Inbox', 
-                    4,
-                    key: _sidebarInboxKey,
-                    trailing: unreadCount > 0 
-                        ? Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Text(
-                              unreadCount > 99 ? '99+' : unreadCount.toString(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            )
-                        : null,
-                    );
-                }
-              ),
+              _menuItem(context, Icons.help_outline, 'Help', 3),
+              _menuItem(context, Icons.mail_outline, 'Inbox', 4, key: _sidebarInboxKey),
+              _menuItem(context, Icons.person, 'Profile', 5, key: _sidebarProfileKey),
               
               const Divider(color: Colors.white24),
             ],
@@ -1208,16 +1250,20 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
   Widget _menuItem(BuildContext context, IconData icon, String label, int index,
       {VoidCallback? onTap, Widget? trailing, Key? key}) {
-    return ListTile(
-      key: key,
-      leading: Icon(icon, color: Colors.white),
-      title: Text(label, style: const TextStyle(color: Colors.white)),
-      trailing: trailing,
-      selected: _selectedIndex == index,
-      selectedTileColor: Colors.white.withValues(alpha: 0.2),
-      onTap: onTap ?? () {
-        setState(() => _selectedIndex = index);
-      },
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: ListTile(
+        key: key,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        leading: Icon(icon, color: Colors.white),
+        title: Text(label, style: const TextStyle(color: Colors.white)),
+        trailing: trailing,
+        selected: _selectedIndex == index,
+        selectedTileColor: Colors.white.withValues(alpha: 0.2),
+        onTap: onTap ?? () {
+          setState(() => _selectedIndex = index);
+        },
+      ),
     );
   }
 
@@ -1433,15 +1479,21 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                   child: NavigationBar(
                     backgroundColor: HexColor("#116754"),
                     indicatorColor: Colors.white.withValues(alpha: 0.1),
-                    selectedIndex: _selectedIndex,
-                    onDestinationSelected: _onItemTapped,
+                    selectedIndex: _selectedIndex == 5 ? 4 : (_selectedIndex == 4 ? 2 : _selectedIndex), // Map Profile(5) to 4, Inbox(4) to Home(2) or keep selected? 
+                    onDestinationSelected: (index) {
+                      if (index == 4) {
+                        // Profile tapped on mobile
+                        _onItemTapped(5);
+                      } else {
+                        _onItemTapped(index);
+                      }
+                    },
                     destinations: [
-                      NavigationDestination(icon: Icon(Icons.schedule_outlined, key: _navScheduleKey), label: 'Schedule'), // Index 0
-                      NavigationDestination(icon: Icon(Icons.class_outlined, key: _navClassesKey), label: 'Classes'),   // Index 1
+                      NavigationDestination(key: _navScheduleKey, icon: const Icon(Icons.schedule_outlined), label: 'Schedule'), // Index 0
+                      NavigationDestination(key: _navClassesKey, icon: const Icon(Icons.class_outlined), label: 'Classes'),   // Index 1
                       const NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),       // Index 2
                       const NavigationDestination(icon: Icon(Icons.help_outline_rounded), label: 'Help'), // Index 3
-                      NavigationDestination(icon: Icon(Icons.mail_outlined, key: _navInboxKey), label: 'Inbox'),      // Index 4
-                      NavigationDestination(icon: Icon(Icons.person_outline, key: _navProfileKey), label: 'Profile'),   // Index 5
+                      NavigationDestination(key: _navProfileKey, icon: const Icon(Icons.person_outline), label: 'Profile'),   // Index 4
                     ],
                   ),
                 ),
@@ -1463,8 +1515,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
       case 1: return 'My Classes';
       case 2: return 'LIME'; // Home
       case 3: return 'Help & Tutorials';
-      case 4: return 'Inbox';
-      case 5: return 'Profile';
+      case 4: return 'Profile';
       default: return 'LIME';
     }
   }

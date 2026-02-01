@@ -6,7 +6,8 @@ import 'dart:async';
 
 class SchedulePage extends StatefulWidget {
   final Stream<QuerySnapshot>? sectionsStream;
-  const SchedulePage({super.key, this.sectionsStream});
+  final int? initialTabIndex;
+  const SchedulePage({super.key, this.sectionsStream, this.initialTabIndex});
 
   @override
   State<SchedulePage> createState() => _SchedulePageState();
@@ -99,6 +100,7 @@ class _SchedulePageState extends State<SchedulePage> {
 
     return DefaultTabController(
       length: 2,
+      initialIndex: widget.initialTabIndex ?? 0,
       child: Column(
         children: [
           PreferredSize(
@@ -248,7 +250,7 @@ class _SchedulePageState extends State<SchedulePage> {
                       Icon(Icons.schedule, size: 16, color: HexColor("#116754")),
                       const SizedBox(width: 6),
                       Text(
-                        '${slot['day'] ?? ''} ${slot['time'] ?? 'TBA'}',
+                        slot['time'] == 'TBA' ? 'TBA' : '${slot['day'] ?? ''} ${slot['time'] ?? 'TBA'}',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w500,

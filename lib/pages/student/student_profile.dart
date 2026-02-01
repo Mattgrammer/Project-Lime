@@ -11,6 +11,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'dart:convert'; // Needed for base64Decode
+import 'dart:typed_data';
 
 // Import the separate page files
 import 'home_page.dart';
@@ -24,6 +25,9 @@ import '../../widgets/delete_account_dialog.dart';
 import '../common/processing_deletion_page.dart';
 import '../../widgets/connectivity_indicator.dart';
 import '../common/help_page.dart';
+import '../../utils/notification_helper.dart';
+import '../../widgets/change_password_dialog.dart';
+import '../../widgets/guide_pointer.dart';
 
 class ProfileStudentPage extends StatefulWidget {
   const ProfileStudentPage({super.key});
@@ -34,15 +38,17 @@ class ProfileStudentPage extends StatefulWidget {
 
 class _ProfileStudentPageState extends State<ProfileStudentPage> {
   int _selectedIndex = 2; // Default to Home
-  bool _startTour = false;
   bool _detailsSubmitted = false;
   bool _isLoading = true;
   bool _isLoadingProfile = false;
   StreamSubscription? _profileSubscription;
   
   // SHARED DATA LAYER
-  Stream<QuerySnapshot>? _sectionsStream;
-  final List<Widget?> _pages = List.filled(6, null); // Lazy-loaded pages
+  StreamSubscription? _sectionsSub;
+  StreamSubscription? _notificationSub;
+  QuerySnapshot? _sectionsSnapshot;
+  Map<String, dynamic>? _currentProfileData;
+  List<String> _currentListeningSectionIds = [];
 
   final TextEditingController _nameController = TextEditingController();
   String? _selectedUserType;
@@ -52,6 +58,9 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
   String? _profileImageUrl;
   String? _profileImageThumbnail;
   List<String> _assignedSections = [];
+  final List<Widget?> _pages = List.filled(6, null);
+  Uint8List? _thumbnailBytes;
+  int? _pendingInitialTab;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -71,91 +80,78 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     'Grade 12',
   ];
 
-  // Navigation Keys
+  // Navigation Keys - Mobile (Bottom Nav)
   final GlobalKey _navScheduleKey = GlobalKey();
   final GlobalKey _navClassesKey = GlobalKey();
   final GlobalKey _navGradesKey = GlobalKey();
-  final GlobalKey _navInboxKey = GlobalKey();
   final GlobalKey _navProfileKey = GlobalKey();
   final GlobalKey _navHelpKey = GlobalKey();
   final GlobalKey _navHomeKey = GlobalKey();
+
+  // Navigation Keys - Desktop (Sidebar)
+  final GlobalKey _sidebarClassesKey = GlobalKey();
+  final GlobalKey _sidebarGradesKey = GlobalKey();
+  final GlobalKey _sidebarInboxKey = GlobalKey();
+  final GlobalKey _sidebarProfileKey = GlobalKey();
+  final GlobalKey _sidebarHelpKey = GlobalKey();
+  final GlobalKey _sidebarHomeKey = GlobalKey();
+
+  final GlobalKey _statsOverviewKey = GlobalKey(); // Centrally managed key
 
   @override
   void initState() {
     super.initState();
     _loadProfileData();
-    _initSectionsStream();
-  }
-
-  void _initSectionsStream() {
-    final user = _auth.currentUser;
-    if (user != null) {
-      _sectionsStream = _firestore
-          .collection('sections')
-          .where('studentUids', arrayContains: user.uid)
-          .snapshots();
-    }
-  }
-
-  Widget _getPage(int index) {
-    if (_pages[index] != null) return _pages[index]!;
-
-    switch (index) {
-      case 0:
-        _pages[index] = SubjectsPage(sectionsStream: _sectionsStream);
-        break;
-      case 1:
-        _pages[index] = GradesPage(sectionsStream: _sectionsStream);
-        break;
-      case 2:
-        _pages[index] = HomePage(
-          onNavigate: (i) => setState(() => _selectedIndex = i),
-          startTour: _startTour,
-          scheduleKey: _navScheduleKey,
-          classesKey: _navClassesKey,
-          gradesKey: _navGradesKey,
-          inboxKey: _navInboxKey,
-          profileKey: _navProfileKey,
-          helpKey: _navHelpKey,
-          profileImagePath: _profileImage?.path,
-          profileImageThumbnail: _profileImageThumbnail,
-          profileImageUrl: _profileImageUrl,
-        );
-        break;
-      case 3:
-        _pages[index] = HelpPage(
-          onStartTour: () {
-            setState(() {
-              _selectedIndex = 2;
-              _startTour = true;
-              _pages[2] = null; // Force rebuild with tour
-            });
-            Future.delayed(const Duration(milliseconds: 100), () {
-              if (mounted) {
-                setState(() {
-                  _startTour = false;
-                });
-              }
-            });
-          },
-          userType: 'Student',
-        );
-        break;
-      case 4:
-        _pages[index] = const InboxPage();
-        break;
-      case 5:
-        _pages[index] = _buildProfileTab();
-        break;
-    }
-    return _pages[index]!;
+    _initNotificationListener();
+    // Safety timeout to prevent infinite spinner
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
+      }
+    });
+    // _initSectionsStream(); // REMOVED
   }
 
   @override
   void dispose() {
     _profileSubscription?.cancel();
+    _sectionsSub?.cancel();
+    _notificationSub?.cancel();
     _nameController.dispose();
     super.dispose();
+  }
+
+  void _initNotificationListener() {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    bool isFirstLoad = true;
+    _notificationSub?.cancel();
+    _notificationSub = _firestore
+        .collection('notifications')
+        .where('to', isEqualTo: user.uid)
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .listen((snap) {
+          if (!mounted) return;
+          
+          if (isFirstLoad) {
+            isFirstLoad = false;
+            return;
+          }
+
+          for (var change in snap.docChanges) {
+            if (change.type == DocumentChangeType.added) {
+              final data = change.doc.data();
+              if (data != null) {
+                // Show pop-out toast globally for NEW notifications
+                NotificationHelper.showInfo(context, data['body'] ?? data['title'] ?? 'New Notification');
+                // Removed auto-read logic so badge remains visible
+                // change.doc.reference.update({'read': true});
+              }
+            }
+          }
+        });
   }
 
   // ================= LOAD PROFILE =================
@@ -177,33 +173,38 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
       try {
         if (doc.exists) {
           final data = doc.data()!;
+          _currentProfileData = data;
           
           final name = data['name'] as String? ?? '';
-          final userType = data['userType'] as String?;
-          final teacherType = data['teacherType'] as String?;
-          final grade = data['gradeLevel'] as String?;
-          final detailsSubmitted = data['detailsSubmitted'] as bool? ?? false;
           final sections = data['sections'] as List<dynamic>?;
           final sectionsList = sections != null ? sections.map((e) => e?.toString() ?? '').where((s) => s.isNotEmpty).toList() : <String>[];
-          final imgPath = data['profileImagePath'] as String?;
-          final imgUrl = data['profileImageUrl'] as String?;
-
+          
           setState(() {
             _nameController.text = name;
-            _selectedUserType = userType;
-            _selectedTeacherType = teacherType;
-            _selectedGradeLevel = grade;
-            _detailsSubmitted = detailsSubmitted;
+            _selectedUserType = data['userType'] as String?;
+            _selectedTeacherType = data['teacherType'] as String?;
+            _selectedGradeLevel = data['gradeLevel'] as String?;
+            _detailsSubmitted = data['detailsSubmitted'] as bool? ?? false;
             _assignedSections = sectionsList;
-            _profileImageUrl = imgUrl;
+            _profileImageUrl = data['profileImageUrl'] as String?;
             _profileImageThumbnail = data['profileImageThumbnail'] as String?;
+            if (_profileImageThumbnail != null) {
+              _thumbnailBytes = base64Decode(_profileImageThumbnail!);
+            } else {
+              _thumbnailBytes = null;
+            }
 
-            if (imgPath != null && File(imgPath).existsSync()) {
-              _profileImage = File(imgPath);
+            if (data['profileImagePath'] != null && File(data['profileImagePath'] as String).existsSync()) {
+              _profileImage = File(data['profileImagePath'] as String);
             } else {
               _profileImage = null; 
             }
+            // Force re-creation of all pages to reflect updated profile info
+            _pages.fillRange(0, _pages.length, null);
           });
+
+          // Start listener for sections
+          _updateSectionsSubscription(sectionsList);
         }
       } finally {
         if (mounted) {
@@ -215,19 +216,119 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     }, onError: (e) {
       _isLoadingProfile = false;
       debugPrint('Error listening to profile: $e');
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     });
+  }
+
+  void _updateSectionsSubscription(List<String> sectionIds) {
+    // Only resubscribe if list changed from what we are currently listening to
+    if (_areListsEqual(_currentListeningSectionIds, sectionIds) && _sectionsSub != null) return;
+    _currentListeningSectionIds = List.from(sectionIds);
+    
+    _sectionsSub?.cancel();
+    if (sectionIds.isEmpty) {
+      setState(() => _sectionsSnapshot = null);
+      return;
+    }
+
+    final idsToQuery = sectionIds.take(10).toList(); // Firestore whereIn limit
+    _sectionsSub = _firestore.collection('sections')
+        .where(FieldPath.documentId, whereIn: idsToQuery)
+        .snapshots()
+        .listen((snap) {
+          if (mounted) {
+            setState(() => _sectionsSnapshot = snap);
+          }
+        });
+  }
+
+  bool _areListsEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  Widget _getPage(int index) {
+    if (_pages[index] != null) return _pages[index]!;
+    
+    switch (index) {
+      case 0:
+        _pages[index] = SubjectsPage(
+          initialSectionsSnapshot: _sectionsSnapshot,
+          initialTabIndex: _pendingInitialTab,
+        );
+        _pendingInitialTab = null;
+        break;
+      case 1:
+        _pages[index] = GradesPage(
+          initialData: _currentProfileData,
+          initialSectionsSnapshot: _sectionsSnapshot,
+          initialSemester: _pendingInitialTab,
+        );
+        _pendingInitialTab = null;
+        break;
+      case 2:
+        _pages[index] = HomePage(
+          onNavigate: (i, {initialTab}) => setState(() {
+            _selectedIndex = i;
+            if (initialTab != null) {
+              _pendingInitialTab = initialTab;
+              _pages[i] = null; // Force re-creation
+            }
+          }),
+          scheduleKey: _navScheduleKey,
+          classesKey: _navClassesKey,
+          gradesKey: _navGradesKey,
+          profileKey: _navProfileKey,
+          helpKey: _navHelpKey,
+          statsOverviewKey: _statsOverviewKey, // NEW
+          profileImagePath: _profileImage?.path,
+          profileImageThumbnail: _profileImageThumbnail,
+          profileImageUrl: _profileImageUrl,
+          profileThumbnailBytes: _thumbnailBytes,
+        );
+        break;
+      case 3:
+        _pages[index] = HelpPage(
+          onStartTour: () {
+            setState(() {
+              _selectedIndex = 2; // Switch to Home
+            });
+            
+            // Wait for Home page to load before starting tour
+            Future.delayed(const Duration(seconds: 1), () {
+              if (mounted) {
+                _startStudentTour();
+              }
+            });
+          },
+          userType: 'Student',
+        );
+        break;
+      case 4:
+        _pages[index] = const InboxPage();
+        break;
+      case 5:
+        _pages[index] = _buildProfileTab();
+        break;
+    }
+    return _pages[index]!;
   }
 
   // ================= SAVE PROFILE =================
   Future<String?> _generateThumbnail(File file) async {
     try {
+      // Desktop (Windows/Linux/Mac): Read bytes directly since compression plugin is mobile-only
       if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        return null; 
+        final bytes = await file.readAsBytes();
+        // Limit to ~500KB to avoid Firestore document limit (1MB)
+        if (bytes.length > 500 * 1024) {
+          debugPrint("Image too large for Firestore thumbnail: ${bytes.length} bytes");
+          return null; // Or implement a pure-Dart resizing/compression here if needed
+        }
+        return base64Encode(bytes);
       }
       
       final result = await FlutterImageCompress.compressWithFile(
@@ -316,9 +417,13 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     }
 
     if (selectedFile != null) {
-      if (!mounted) return null; // Check mounted before using context
-      // Only crop on non-desktop platforms as image_cropper handles them better
-      if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
+      if (!mounted) return null;
+      
+      // Skip cropping on Desktop (not fully supported by plugin)
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        return selectedFile;
+      }
+
         final croppedFile = await ImageCropper().cropImage(
           sourcePath: selectedFile.path,
           aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
@@ -336,18 +441,17 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
             ),
             WebUiSettings(
               context: context,
-              // Removed problematic size and presentStyle for now to fix build
             ),
           ],
         );
         if (croppedFile != null) {
           return File(croppedFile.path);
         }
-      } else {
+      /* } else {
         return selectedFile;
-      }
+      } */
     }
-    return null;
+    return selectedFile;
   }
 
   // ================= SUBMIT PROFILE =================
@@ -414,6 +518,14 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     Navigator.pushNamedAndRemoveUntil(context, '/signin', (_) => false);
   }
 
+  // ================= CHANGE PASSWORD =================
+  void _changePassword() {
+    showDialog(
+      context: context,
+      builder: (context) => const ChangePasswordDialog(),
+    );
+  }
+
   void _showEditProfileSheet() {
     final TextEditingController nameEditController = TextEditingController(text: _nameController.text);
     String? tempGrade = _selectedGradeLevel;
@@ -450,8 +562,14 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                             backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
                             backgroundImage: tempProfileImage != null
                                 ? FileImage(tempProfileImage!)
-                                : (_profileImageUrl != null ? NetworkImage(_profileImageUrl!) : null) as ImageProvider?,
-                            child: (tempProfileImage == null && _profileImageUrl == null)
+                                : (_thumbnailBytes != null
+                                    ? MemoryImage(_thumbnailBytes!)
+                                    : (_profileImageThumbnail != null
+                                        ? MemoryImage(base64Decode(_profileImageThumbnail!))
+                                        : (_profileImageUrl != null
+                                            ? NetworkImage(_profileImageUrl!)
+                                            : null))) as ImageProvider?,
+                            child: (tempProfileImage == null && _thumbnailBytes == null && _profileImageThumbnail == null && _profileImageUrl == null)
                                 ? Icon(Icons.person, size: 50, color: HexColor("#116754"))
                                 : null,
                           ),
@@ -472,7 +590,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                                 decoration: BoxDecoration(
                                   color: HexColor("#116754"),
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2),
+                                  border: Border.all(color: Colors.black, width: 2),
                                 ),
                                 child: const Icon(Icons.camera_alt, size: 18, color: Colors.white),
                               ),
@@ -517,7 +635,16 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                                 setState(() {
                                   _nameController.text = nameEditController.text.trim();
                                   _selectedGradeLevel = tempGrade;
-                                  _profileImage = tempProfileImage; // Apply the new image
+                                  _profileImage = tempProfileImage;
+
+                                  // NEW: Instant local thumbnail preview for global syncing
+                                  if (_profileImage != null) {
+                                    _thumbnailBytes = _profileImage!.readAsBytesSync();
+                                  }
+
+                                  // IMMEDIATE LOCAL PREVIEW:
+                                  // Force all pages to re-render with new local data
+                                  _pages.fillRange(0, _pages.length, null);
                                 });
                                 try {
                                   await _saveProfileData();
@@ -614,17 +741,17 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                 child: Container(
                   padding: const EdgeInsets.all(4),
                   decoration: const BoxDecoration(
-                    color: Colors.white,
+                    color: Colors.black,
                     shape: BoxShape.circle,
                   ),
                   child: CircleAvatar(
-                    key: ValueKey(_profileImageUrl ?? _profileImageThumbnail),
+                    key: ValueKey("${_profileImageUrl ?? _profileImageThumbnail}_${_thumbnailBytes?.length ?? 0}_${_profileImage?.path}"),
                     radius: 65,
                     backgroundColor: Colors.grey[200],
                     backgroundImage: _profileImage != null
                         ? FileImage(_profileImage!)
-                        : (_profileImageThumbnail != null 
-                            ? MemoryImage(base64Decode(_profileImageThumbnail!))
+                        : (_thumbnailBytes != null 
+                            ? MemoryImage(_thumbnailBytes!)
                             : (_profileImageUrl != null ? NetworkImage(_profileImageUrl!) : null)) as ImageProvider?,
                     child: (_profileImage == null && _profileImageUrl == null && _profileImageThumbnail == null)
                         ? Icon(Icons.person, size: 65, color: HexColor("#116754"))
@@ -724,6 +851,11 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RequestSectionPage())),
                 ),
                 _buildFacebookListTile(
+                  icon: Icons.lock_outline,
+                  title: 'Change Password',
+                  onTap: _changePassword,
+                ),
+                _buildFacebookListTile(
                   icon: Icons.logout,
                   title: 'Logout',
                   onTap: _logout,
@@ -749,25 +881,44 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     required VoidCallback onTap,
     Color? titleColor,
   }) {
-    return ListTile(
-      leading: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.grey[100],
-          shape: BoxShape.circle,
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: (titleColor ?? HexColor("#116754")),
+          width: 1.5,
         ),
-        child: Icon(icon, color: Colors.black87, size: 20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      title: Text(
-        title,
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-          color: titleColor ?? Colors.black87,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: (titleColor ?? HexColor("#116754")).withValues(alpha: 0.1),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: titleColor ?? HexColor("#116754"), size: 20),
         ),
+        title: Text(
+          title,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: titleColor ?? Colors.black87,
+          ),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
+        onTap: onTap,
       ),
-      trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-      onTap: onTap,
     );
   }
 
@@ -776,47 +927,42 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     return Column(
       children: [
         InkWell(
-          onTap: () => setState(() => _selectedIndex = 5),
+          onTap: () => setState(() => _selectedIndex = 4),
           borderRadius: BorderRadius.circular(12),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
-            child: StreamBuilder<DocumentSnapshot>(
-              stream: _firestore.collection('students').doc(_auth.currentUser?.uid).snapshots(),
-              builder: (context, snapshot) {
-                final data = snapshot.data?.data() as Map<String, dynamic>?;
-                final name = data?['name'] as String? ?? _nameController.text;
-                final imgUrl = data?['profileImageUrl'] as String?;
-                final imgThumb = data?['profileImageThumbnail'] as String?;
-                final imgPath = data?['profileImagePath'] as String?;
-
-                return Column(
-                  children: [
-                    CircleAvatar(
-                      radius: 38,
-                      backgroundColor: Colors.white,
-                      backgroundImage: imgThumb != null 
-                          ? MemoryImage(base64Decode(imgThumb))
-                          : (imgUrl != null 
-                              ? NetworkImage(imgUrl) 
-                              : (imgPath != null && File(imgPath).existsSync() 
-                                  ? FileImage(File(imgPath)) 
-                                  : null)) as ImageProvider?,
-                      child: (imgUrl == null && imgThumb == null && (imgPath == null || !File(imgPath).existsSync()))
-                          ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
-                          : null,
-                    ),
-                    const SizedBox(height: 14),
-                    Text(
-                      name,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                );
-              }
+            child: Column(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black, width: 2.0),
+                  ),
+                  child: CircleAvatar(
+                    radius: 38,
+                    backgroundColor: Colors.white,
+                    backgroundImage: _thumbnailBytes != null 
+                        ? MemoryImage(_thumbnailBytes!)
+                        : (_profileImageUrl != null 
+                            ? NetworkImage(_profileImageUrl!) 
+                            : (_profileImage != null && _profileImage!.existsSync() 
+                                ? FileImage(_profileImage!) 
+                                : null)) as ImageProvider?,
+                    child: (_profileImageUrl == null && _profileImageThumbnail == null && (_profileImage == null || !_profileImage!.existsSync()))
+                        ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  _nameController.text.isNotEmpty ? _nameController.text : 'Student',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
           ),
         ),
@@ -825,12 +971,12 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
           child: ListView(
             padding: EdgeInsets.zero,
             children: [
-              _menuItem(context, Icons.assignment, 'Subjects', 0, key: _navClassesKey),
-              _menuItem(context, Icons.grade, 'Grades', 1, key: _navGradesKey),
-              _menuItem(context, Icons.home, 'Home', 2, key: _navHomeKey),
-              _menuItem(context, Icons.help_outline_rounded, 'Help', 3, key: _navHelpKey), // NEW
-              _menuItem(context, Icons.mail_outlined, 'Inbox', 4, key: _navInboxKey),       // SHIFTED
-              _menuItem(context, Icons.person_outline, 'Profile', 5, key: _navProfileKey),   // SHIFTED
+              _menuItem(context, Icons.assignment, 'Subjects', 0, key: _sidebarClassesKey),
+              _menuItem(context, Icons.grade, 'Grades', 1, key: _sidebarGradesKey),
+              _menuItem(context, Icons.home, 'Home', 2, key: _sidebarHomeKey),
+              _menuItem(context, Icons.help_outline_rounded, 'Help', 3, key: _sidebarHelpKey),
+              _menuItem(context, Icons.mail_outline, 'Inbox', 4, key: _sidebarInboxKey),
+              _menuItem(context, Icons.person_outline, 'Profile', 5, key: _sidebarProfileKey),
             const Divider(color: Colors.white24),
 
             ],
@@ -1043,15 +1189,22 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                   child: NavigationBar(
                     backgroundColor: HexColor("#116754"),
                     indicatorColor: Colors.white.withValues(alpha: 0.1),
-                    selectedIndex: _selectedIndex,
-                    onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+                    selectedIndex: _selectedIndex == 5 ? 4 : (_selectedIndex == 4 ? 2 : _selectedIndex),
+                    onDestinationSelected: (index) {
+                      setState(() {
+                         if (index == 4) {
+                           _selectedIndex = 5; // Profile
+                         } else {
+                           _selectedIndex = index;
+                         }
+                      });
+                    },
                     destinations: [
-                      NavigationDestination(icon: Icon(Icons.assignment_outlined, key: _navClassesKey), label: 'Subjects'),
-                      NavigationDestination(icon: Icon(Icons.grade_outlined, key: _navGradesKey), label: 'Grades'),
-                      NavigationDestination(icon: Icon(Icons.home_outlined, key: _navHomeKey), label: 'Home'),
-                      NavigationDestination(icon: Icon(Icons.help_outline_rounded, key: _navHelpKey), label: 'Help'),
-                      NavigationDestination(icon: Icon(Icons.mail_outlined, key: _navInboxKey), label: 'Inbox'),
-                      NavigationDestination(icon: Icon(Icons.person_outline, key: _navProfileKey), label: 'Profile'),
+                      NavigationDestination(key: _navClassesKey, icon: const Icon(Icons.assignment_outlined), label: 'Subjects'),
+                      NavigationDestination(key: _navGradesKey, icon: const Icon(Icons.grade_outlined), label: 'Grades'),
+                      NavigationDestination(key: _navHomeKey, icon: const Icon(Icons.home_outlined), label: 'Home'),
+                      NavigationDestination(key: _navHelpKey, icon: const Icon(Icons.help_outline_rounded), label: 'Help'),
+                      NavigationDestination(key: _navProfileKey, icon: const Icon(Icons.person_outline), label: 'Profile'),
                     ],
                   ),
                 ),
@@ -1063,15 +1216,22 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
   }
 
   Widget _menuItem(BuildContext context, IconData icon, String label, int index, {VoidCallback? onTap, GlobalKey? key}) {
-    return ListTile(
-      key: key,
-      leading: Icon(icon, color: Colors.white),
-      title: Text(label, style: const TextStyle(color: Colors.white)),
-      selected: _selectedIndex == index,
-      selectedTileColor: Colors.white.withValues(alpha: 0.2),
-      onTap: onTap ?? () {
-        setState(() => _selectedIndex = index);
-      },
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: ListTile(
+        key: key,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        leading: Icon(icon, color: Colors.white),
+        title: Text(label, style: const TextStyle(color: Colors.white)),
+        selected: _selectedIndex == index,
+        selectedTileColor: Colors.white.withValues(alpha: 0.2),
+        onTap: onTap ?? () {
+          setState(() {
+            _selectedIndex = index;
+            _pendingInitialTab = null; // Clear if navigating manually
+          });
+        },
+      ),
     );
   }
 
@@ -1085,10 +1245,51 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
       case 1: return 'My Grades';
       case 2: return 'LIME';
       case 3: return 'Help & Tutorials';
-      case 4: return 'Inbox';
-      case 5: return 'Profile';
+      case 4: return 'Profile';
       default: return 'LIME';
     }
+  }
+
+  void _startStudentTour() {
+    debugPrint('GUIDE: ProfileStudentPage._startStudentTour() called');
+    final bool isDesktop = MediaQuery.of(context).size.width > 900;
+
+    GuidePointer.show(
+      context,
+      steps: [
+        GuideStep(
+           targetKey: _statsOverviewKey,
+           title: "Academic Performance",
+           content: "Monitor your enrolled subjects, daily schedule, GPA transitions, and unread communications at a glance.",
+        ),
+        GuideStep(
+          targetKey: isDesktop ? _sidebarClassesKey : _navClassesKey,
+          title: "My Subjects",
+          content: "Access your enrolled subjects and grades from this tab.",
+          buttonLabel: "Next",
+        ),
+        GuideStep(
+          targetKey: isDesktop ? _sidebarGradesKey : _navGradesKey,
+          title: "Grades Overview",
+          content: "Track your academic progress and see your latest marks here.",
+          buttonLabel: "Next",
+        ),
+        GuideStep(
+          targetKey: isDesktop ? _sidebarHelpKey : _navHelpKey,
+          title: "Help & Tutorials",
+          content: "Need guidance? Access all interactive tutorials and app information right here.",
+          buttonLabel: "Next",
+        ),
+        GuideStep(
+          targetKey: isDesktop ? _sidebarProfileKey : _navProfileKey,
+          title: "Your Profile",
+          content: "Manage your account, update your photo, and request new sections for your subjects.",
+          buttonLabel: "Finish Tour",
+        ),
+      ],
+      totalStepsOverride: 5,
+      onComplete: () {},
+    );
   }
 }
 

@@ -8,8 +8,16 @@ import '../../models/student.dart';
 import '../../widgets/lime_dropdown.dart';
 import '../../widgets/time_range_selector.dart';
 import '../../widgets/guide_pointer.dart';
+import '../../services/fcm_service.dart';
+import '../../constants/demo_images.dart';
 
+import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:image_picker/image_picker.dart';
+import 'package:image_cropper/image_cropper.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 class SectionDetailPage extends StatefulWidget {
   final String sectionName;
@@ -41,6 +49,15 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
 
   StreamSubscription? _studentsSubscription;
   StreamSubscription? _sectionSubscription;
+  StreamSubscription? _teachersSubscription;
+  Map<String, Map<String, dynamic>> _teacherProfiles = {};
+
+  // Section Profile Picture State
+  String? _sectionImageUrl;
+  String? _sectionImageThumbnail;
+  Uint8List? _sectionThumbnailBytes;
+  File? _tempSectionImage;
+  bool _isSavingSectionImage = false;
   
   // Tour Keys
   final GlobalKey _tourStudentKey = GlobalKey();
@@ -56,12 +73,14 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
   final GlobalKey _dialogDaysKey = GlobalKey();
   final GlobalKey _dialogSemesterKey = GlobalKey();
   final GlobalKey _dialogAddButtonKey = GlobalKey();
+  final GlobalKey _dialogTbaKey = GlobalKey(); // NEW: Key for TBA checkbox
   final GlobalKey _dialogTimeKey = GlobalKey();
   
   // Dialog Tour State
   bool _dialogTourStarted = false;
   bool _dialogTourReady = false;
   bool _isSubjectConfirmed = false;
+  bool isTba = false;
 
   @override
   void initState() {
@@ -126,7 +145,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         GuideStep(
           targetKey: _emptyStateKey,
           title: "Welcome to Your Section!",
-          content: "This is 'Demo Section - Grade 10-A'. It's currently empty, so let's set it up.",
+          content: "This is '[TUTORIAL] Demo Section - Grade 10-A'. It's currently empty, so let's set it up.",
           buttonLabel: "Let's Go!",
         ),
         GuideStep(
@@ -136,7 +155,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
           hideButton: true, // Force user to tap the actual button
         ),
       ],
-      totalStepsOverride: 5,
+      totalStepsOverride: 7,
       onComplete: () {
         // This onComplete will trigger if user manually closes, 
         // but since we hide the button for the last step, 
@@ -152,6 +171,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     _tabController?.dispose();
     _studentsSubscription?.cancel();
     _sectionSubscription?.cancel();
+    _teachersSubscription?.cancel();
     super.dispose();
   }
 
@@ -193,6 +213,15 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       
       final data = snapshot.data()!;
       _sectionAdviserUid = data['adviserUid'] as String?;
+      _sectionImageThumbnail = data['sectionImageThumbnail'] as String?;
+      _sectionImageUrl = data['sectionImageUrl'] as String?;
+
+      if (_sectionImageThumbnail != null) {
+        _sectionThumbnailBytes = base64Decode(_sectionImageThumbnail!);
+      } else {
+        _sectionThumbnailBytes = null;
+      }
+
       final user = FirebaseAuth.instance.currentUser;
       
       if (data['adviserName'] != null) {
@@ -208,6 +237,18 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
               .toList();
         } else {
           _schedule = [];
+        }
+
+        // Fetch profiles for all teachers in the schedule + adviser
+        final List<String> allTeacherUids = _schedule
+            .map((s) => s['teacherUid'] as String?)
+            .where((uid) => uid != null && uid.isNotEmpty)
+            .cast<String>()
+            .toList();
+        if (_sectionAdviserUid != null) allTeacherUids.add(_sectionAdviserUid!);
+        
+        if (allTeacherUids.isNotEmpty) {
+          _listenToTeachers(allTeacherUids.toSet().toList());
         }
       });
       
@@ -226,9 +267,156 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     });
   }
 
+  bool get _isCurrentUserAdviser {
+    final user = FirebaseAuth.instance.currentUser;
+    return user != null && _sectionAdviserUid == user.uid;
+  }
+
+  Future<void> _pickSectionImage() async {
+    if (!_isCurrentUserAdviser) return;
+
+    final ImagePicker picker = ImagePicker();
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+    );
+
+    if (image != null) {
+      File imageToUse = File(image.path);
+      
+      try {
+        final CroppedFile? croppedFile = await ImageCropper().cropImage(
+          sourcePath: image.path,
+          aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+          uiSettings: [
+            AndroidUiSettings(
+              toolbarTitle: 'Crop Section Image',
+              toolbarColor: HexColor("#116754"),
+              toolbarWidgetColor: Colors.white,
+              initAspectRatio: CropAspectRatioPreset.square,
+              lockAspectRatio: true,
+            ),
+            IOSUiSettings(
+              title: 'Crop Section Image',
+              aspectRatioLockEnabled: true,
+            ),
+          ],
+        );
+
+        if (croppedFile != null) {
+          imageToUse = File(croppedFile.path);
+        }
+      } catch (e) {
+        debugPrint('ImageCropper failed (likely not supported on this platform): $e');
+      }
+
+      setState(() {
+        _tempSectionImage = imageToUse;
+      });
+      await _saveSectionImage();
+    }
+  }
+
+  Future<String> _generateSectionThumbnail(File imageFile) async {
+    try {
+      final Uint8List? result = await FlutterImageCompress.compressWithFile(
+        imageFile.absolute.path,
+        minWidth: 100,
+        minHeight: 100,
+        quality: 50,
+      );
+      if (result != null) {
+        return base64Encode(result);
+      }
+    } catch (e) {
+      debugPrint('Compression failed: $e');
+    }
+
+    // Fallback: read file directly
+    try {
+      final bytes = await imageFile.readAsBytes();
+      return base64Encode(bytes);
+    } catch (e) {
+      debugPrint('Error reading file bytes: $e');
+      return '';
+    }
+  }
+
+  Future<void> _saveSectionImage() async {
+    if (_tempSectionImage == null || !_isCurrentUserAdviser || widget.sectionName.contains('[TUTORIAL]')) return;
+
+    setState(() {
+      _isSavingSectionImage = true;
+    });
+
+    try {
+      final String thumbnail = await _generateSectionThumbnail(_tempSectionImage!);
+      
+      if (thumbnail.isEmpty) {
+         throw Exception('Failed to generate thumbnail');
+      }
+
+      await FirebaseFirestore.instance
+          .collection('sections')
+          .doc(widget.sectionName)
+          .update({
+        'sectionImageThumbnail': thumbnail,
+        // We only store thumbnail for now as per current profile pic logic
+      });
+
+      if (mounted) {
+        setState(() {
+          // Optimistically update local state to prevent flicker
+          _sectionImageThumbnail = thumbnail;
+          _sectionThumbnailBytes = base64Decode(thumbnail);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Section image updated successfully')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error saving section image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to update section image')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingSectionImage = false;
+          _tempSectionImage = null; // Clear temp after save
+        });
+      }
+    }
+  }
+
+  void _listenToTeachers(List<String> uids) {
+    if (uids.isEmpty) {
+      if (mounted) setState(() => _teacherProfiles = {});
+      return;
+    }
+
+    _teachersSubscription?.cancel();
+    _teachersSubscription = FirebaseFirestore.instance
+        .collection('teachers')
+        .where(FieldPath.documentId, whereIn: uids)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      final Map<String, Map<String, dynamic>> updatedProfiles = {};
+      for (var doc in snapshot.docs) {
+        updatedProfiles[doc.id] = doc.data();
+      }
+      setState(() {
+        _teacherProfiles = updatedProfiles;
+      });
+    });
+  }
+
   Future<void> _saveSchedule() async {
     // DEMO MODE: Skip Firestore save
-    if (widget.startClassesTour) return;
+    if (widget.startClassesTour || widget.sectionName.contains('[TUTORIAL]')) return;
 
     try {
       final firestore = FirebaseFirestore.instance;
@@ -265,7 +453,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     if (studentUid.isEmpty) return;
     
     // DEMO MODE: Skip Firestore operations entirely
-    if (widget.startGradeTour) {
+    if (widget.startGradeTour || widget.sectionName.contains('[TUTORIAL]')) {
       debugPrint('[DEMO] Skipping Firestore save for $subject ($quarter)');
       return;
     }
@@ -350,12 +538,12 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                 steps: [
                    GuideStep(
                       targetKey: _tourStudentKey,
-                      title: "Great job!",
+                      title: "Step 2: Assign Student",
                       content: "The student has been added. You can tap them to manage their personal grades.",
                       buttonLabel: "Go to Grades Tutorial",
                    ),
                 ],
-                totalStepsOverride: 3,
+                totalStepsOverride: 7,
                 initialStepOffset: 2,
                 onComplete: () {
                   _redirectToGradeTour();
@@ -404,6 +592,8 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
             'uid': uid,
             'name': data['name'] as String? ?? 'Unknown',
             'email': data['email'] as String? ?? '',
+            'profileImageThumbnail': data['profileImageThumbnail'] as String?,
+            'profileImageUrl': data['profileImageUrl'] as String?,
           });
         }
       }
@@ -431,7 +621,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     if (user == null && !widget.startClassesTour) return; // Allow null user in demo mode
 
     // DEMO MODE: Simulate adding student
-    if (widget.startClassesTour) {
+    if (widget.startClassesTour || widget.sectionName.contains('[TUTORIAL]')) {
       if (!mounted) return;
       setState(() {
         _students.add(Student(
@@ -512,13 +702,21 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         'senderUid': teacherUid,
         'sectionName': sectionName,
       });
+
+      // NEW: Trigger Push Notification
+      FCMService.sendNotification(
+        recipientUid: studentUid,
+        title: 'New Section Assignment',
+        body: 'You have been added to $sectionName by $teacherName.',
+        data: {'type': 'assignment', 'section': sectionName},
+      );
     } catch (e) {
       debugPrint('Error sending notification to student: $e');
     }
   }
 
   Future<void> _addTeacherNotification(String teacherUid, String title, String message) async {
-    if (widget.startClassesTour) return; // Skip in demo mode
+    if (widget.startClassesTour || widget.sectionName.contains('[TUTORIAL]')) return; // Skip in demo mode
     try {
       await FirebaseFirestore.instance.collection('teachers').doc(teacherUid).collection('inbox').add({
         'title': title,
@@ -527,6 +725,14 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         'read': false,
         'type': 'general',
       });
+
+      // NEW: Trigger Push Notification
+      FCMService.sendNotification(
+        recipientUid: teacherUid,
+        title: title,
+        body: message,
+        data: {'type': 'subject_assignment'},
+      );
     } catch (e) {
       debugPrint('Error sending notification to teacher: $e');
     }
@@ -615,7 +821,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                                         const SizedBox(width: 8),
                                         Expanded(
                                           child: Text(
-                                            '${slot['day'] ?? ''} ${slot['time'] ?? ''}',
+                                            slot['time'] == 'TBA' ? 'TBA' : '${slot['day'] ?? ''} ${slot['time'] ?? ''}',
                                             style: TextStyle(fontSize: 14, color: HexColor("#116754")),
                                           ),
                                         ),
@@ -679,40 +885,102 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     );
   }
 
-
-  Future<void> _showAddSubjectDialog({int? initialSemester, String? initialTeacherUid, String? initialTeacherName}) async {
-    final TextEditingController subjectCtrl = TextEditingController();
-    String? selectedTeacherUid = initialTeacherUid;
-    String? selectedTeacherName = initialTeacherName;
-    Map<String, String> dayTimeMap = {}; // day -> time
-    int? selectedSemester = initialSemester;
+  Future<List<Map<String, dynamic>>> _fetchTeachers() async {
+    final List<Map<String, dynamic>> teachers = [];
     final currentUser = FirebaseAuth.instance.currentUser;
 
-    final List<String> days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-
-    List<Map<String, String>> teachers = [];
     if (widget.startClassesTour || widget.startTeachersTour) {
-      teachers = [
+      return [
         {'uid': 'demo_t1', 'name': 'John Smith', 'displayName': 'John Smith (Math)'},
         {'uid': 'demo_t2', 'name': 'Emily Brown', 'displayName': 'Emily Brown (Science)'},
         {'uid': 'demo_t3', 'name': 'Robert Garcia', 'displayName': 'Robert Garcia (English)'},
       ];
-    } else {
-      try {
-        final firestore = FirebaseFirestore.instance;
-        final snapshot = await firestore.collection('teachers').get();
-        for (var doc in snapshot.docs) {
-          final data = doc.data();
-          final name = (data['name'] as String?) ?? '';
-          final displayName = (currentUser != null && doc.id == currentUser.uid) 
-              ? '$name (you)' 
-              : name;
-          teachers.add({'uid': doc.id, 'name': name, 'displayName': displayName});
-        }
-      } catch (e) {
-        debugPrint('Error loading teachers: $e');
-      }
     }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final snapshot = await firestore.collection('teachers').get();
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final name = (data['name'] as String?) ?? '';
+        final displayName = (currentUser != null && doc.id == currentUser.uid) 
+            ? '$name (you)' 
+            : name;
+        teachers.add({'uid': doc.id, 'name': name, 'displayName': displayName});
+      }
+    } catch (e) {
+      debugPrint('Error loading teachers: $e');
+    }
+    return teachers;
+  }
+
+
+  Future<void> _showAddSubjectDialog({String? initialTeacherUid, String? initialTeacherName, String? editSubject, String? editTeacherUid, int? editSemester}) async {
+    final teachers = await _fetchTeachers();
+    final TextEditingController subjectCtrl = TextEditingController();
+    
+    String? selectedTeacherUid = editTeacherUid ?? initialTeacherUid;
+    String? selectedTeacherName = editTeacherUid != null 
+        ? teachers.firstWhere((t) => t['uid'] == editTeacherUid, orElse: () => {'name': ''})['name']
+        : initialTeacherName;
+        
+    int? selectedSemester = editSemester ?? 1; // Default to 1st sem
+    
+    // Map of Day -> Time Range String (e.g. 'Monday': '8:00 AM - 9:00 AM')
+    final Map<String, String> dayTimeMap = {};
+    bool isTba = false;
+
+    // Pre-fill data if editing
+    if (editSubject != null && editSemester != null && editTeacherUid != null) {
+        subjectCtrl.text = editSubject;
+        // Find existing schedule entries
+        final entries = _schedule.where((s) => 
+            s['subject'] == editSubject && 
+            s['semester'] == editSemester &&
+            s['teacherUid'] == editTeacherUid
+        ).toList();
+
+        if (entries.isNotEmpty) {
+            final first = entries.first;
+            // Check TBA
+            if (first['day'] == 'TBA' || first['time'] == 'TBA') {
+                isTba = true;
+            } else {
+                for (var e in entries) {
+                    if (e['day'] != null && e['time'] != null) {
+                        dayTimeMap[e['day']] = e['time'];
+                    }
+                }
+            }
+        }
+    }
+    final currentUser = FirebaseAuth.instance.currentUser;
+
+    final List<String> days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+    // List<Map<String, String>> teachers = []; // This line is now redundant as teachers are fetched above
+    // if (widget.startClassesTour || widget.startTeachersTour) { // This block is now redundant
+    //   teachers = [
+    //     {'uid': 'demo_t1', 'name': 'John Smith', 'displayName': 'John Smith (Math)'},
+    //     {'uid': 'demo_t2', 'name': 'Emily Brown', 'displayName': 'Emily Brown (Science)'},
+    //     {'uid': 'demo_t3', 'name': 'Robert Garcia', 'displayName': 'Robert Garcia (English)'},
+    //   ];
+    // } else {
+    //   try {
+    //     final firestore = FirebaseFirestore.instance;
+    //     final snapshot = await firestore.collection('teachers').get();
+    //     for (var doc in snapshot.docs) {
+    //       final data = doc.data();
+    //       final name = (data['name'] as String?) ?? '';
+    //       final displayName = (currentUser != null && doc.id == currentUser.uid) 
+    //           ? '$name (you)' 
+    //           : name;
+    //       teachers.add({'uid': doc.id, 'name': name, 'displayName': displayName});
+    //     }
+    //   } catch (e) {
+    //     debugPrint('Error loading teachers: $e');
+    //   }
+    // }
 
     if (!mounted) return;
     
@@ -724,18 +992,23 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     await showDialog(
       context: context,
       builder: (dialogContext) {
-        // Start tour if flag is set and not started
         if (widget.startTeachersTour && !_dialogTourStarted) {
           _dialogTourStarted = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
              _startAddSubjectDialogTour(dialogContext);
           });
         }
+
+        // Initialize state if editing
+        // if (editSubject != null) { // This block is now handled at the top
+        //   subjectCtrl.text = editSubject;
+        // }
+
         return StatefulBuilder(
           builder: (context, setDialogState) {
             
             return AlertDialog(
-          title: const Text('Add Subject'),
+          title: Text(editSubject != null ? 'Edit Subject' : 'Add Subject'),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 500),
@@ -746,7 +1019,8 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                 children: [
                    TextField(
                      key: _dialogSubjectKey,
-                     controller: subjectCtrl, 
+                     controller: subjectCtrl,
+                     textCapitalization: TextCapitalization.characters,
                      autofocus: widget.startTeachersTour,
                      onSubmitted: (val) {
                        if (widget.startTeachersTour) {
@@ -776,7 +1050,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                      key: _dialogTeacherKey,
                      label: 'Teacher',
                      value: selectedTeacherUid,
-                     items: teachers.map((t) => DropdownMenuItem(value: t['uid'], child: Text(t['displayName'] ?? ''))).toList(),
+                     items: teachers.map((t) => DropdownMenuItem<String>(value: t['uid'] as String, child: Text(t['displayName'] as String? ?? ''))).toList(),
                       onChanged: (v) {
                         setDialogState(() {
                           selectedTeacherUid = v;
@@ -791,6 +1065,27 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                       },
                    ),
                   const SizedBox(height: 16),
+                   // TBA Checkbox
+                   CheckboxListTile(
+                     key: _dialogTbaKey,
+                     title: const Text('Time To Be Announced (TBA)'),
+                     subtitle: const Text('Check this if the schedule is not yet finalized'),
+                     value: isTba,
+                     onChanged: (checked) {
+                       setDialogState(() {
+                         isTba = checked ?? false;
+                         if (isTba) {
+                           // Clear day/time selections when TBA is checked
+                           dayTimeMap.clear();
+                         }
+                         if (widget.startTeachersTour && checked == true) {
+                            GuidePointer.nextFor(_dialogTbaKey);
+                         }
+                       });
+                     },
+                     activeColor: HexColor("#116754"),
+                   ),
+                   const SizedBox(height: 16),
                    Column(
                      key: _dialogDaysKey,
                      crossAxisAlignment: CrossAxisAlignment.start,
@@ -834,12 +1129,12 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                                if (isSelected)
                                  Expanded(
                                    child: TimeRangeSelector(
-                                     containerKey: day == 'Monday' ? _dialogTimeKey : null,
+                                     containerKey: (widget.startTeachersTour && dayTimeMap.containsKey(day)) ? _dialogTimeKey : null,
                                      label: '',
                                      initialValue: dayTimeMap[day] ?? '',
                                      onTimeChanged: (v) {
                                         setDialogState(() => dayTimeMap[day] = v);
-                                        if (widget.startTeachersTour && day == 'Monday') {
+                                        if (widget.startTeachersTour) {
                                            GuidePointer.nextFor(_dialogTimeKey);
                                         }
                                      },
@@ -877,50 +1172,79 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
             ElevatedButton.icon(
               key: _dialogAddButtonKey,
               onPressed: () async {
-                final subj = subjectCtrl.text.trim();
+                final subj = subjectCtrl.text.trim().toUpperCase();
                 
                 // Validate
                 if (subj.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please enter a subject name')));
                   return;
                 }
-                if (dayTimeMap.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least one day')));
-                  return;
-                }
-                // Check all selected days have times
-                final missingTimes = dayTimeMap.entries.where((e) => e.value.isEmpty).map((e) => e.key).toList();
-                if (missingTimes.isNotEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Please set time for: ${missingTimes.join(", ")}')));
-                  return;
+                // Only validate day/time if not TBA
+                if (!isTba) {
+                  if (dayTimeMap.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select at least one day or check TBA')));
+                    return;
+                  }
+                  // Check all selected days have times
+                  final missingTimes = dayTimeMap.entries.where((e) => e.value.isEmpty).map((e) => e.key).toList();
+                  if (missingTimes.isNotEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Please set time for: ${missingTimes.join(", ")}')));
+                    return;
+                  }
                 }
                 if (selectedTeacherUid == null || selectedSemester == null) {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select teacher and semester')));
                   return;
                 }
                 
-                // Create one entry per day with its unique time
-                for (var entry in dayTimeMap.entries) {
-                  final scheduleEntry = {
-                    'subject': subj,
-                    'day': entry.key,
-                    'time': entry.value,
-                    'teacherUid': selectedTeacherUid!,
-                    'teacherName': selectedTeacherName ?? '',
-                    'semester': selectedSemester,
-                  };
-                  setState(() {
-                    _schedule.add(scheduleEntry);
-                  });
-                }
                 
-                await _saveSchedule();
-                if (currentUser == null || selectedTeacherUid != currentUser.uid) {
-                  await _addTeacherNotification(
-                    selectedTeacherUid!,
-                    'Assigned as Subject Teacher',
-                    'You have been assigned to teach $subj for section ${widget.sectionName} in the ${selectedSemester == 1 ? "1st" : "2nd"} semester',
-                  );
+                setState(() {
+                  // If editing, remove old entries first (this is a replace operation)
+                  if (editSubject != null && editSemester != null) {
+                      _schedule.removeWhere((s) => 
+                          s['subject'] == editSubject && 
+                          s['semester'] == editSemester &&
+                          s['teacherUid'] == editTeacherUid
+                      );
+                  }
+
+                  // Create schedule entries
+                  if (isTba) {
+                    // For TBA, create a single entry with 'TBA' as time
+                    _schedule.add({
+                      'subject': subj,
+                      'day': 'TBA',
+                      'time': 'TBA',
+                      'teacherUid': selectedTeacherUid!,
+                      'teacherName': selectedTeacherName ?? '',
+                      'semester': selectedSemester,
+                    });
+                  } else {
+                    // Create one entry per day with its unique time
+                    for (var entry in dayTimeMap.entries) {
+                      _schedule.add({
+                        'subject': subj,
+                        'day': entry.key,
+                        'time': entry.value,
+                        'teacherUid': selectedTeacherUid!,
+                        'teacherName': selectedTeacherName ?? '',
+                        'semester': selectedSemester,
+                      });
+                    }
+                  }
+                });
+                
+                if (!widget.startClassesTour && !widget.startTeachersTour) {
+                    await _saveSchedule();
+                    if (currentUser == null || selectedTeacherUid != currentUser.uid) {
+                        if (!selectedTeacherUid!.startsWith('demo_')) {
+                            await _addTeacherNotification(
+                                selectedTeacherUid!,
+                                'Assigned as Subject Teacher',
+                                'You have been assigned to teach $subj for section ${widget.sectionName} in the ${selectedSemester == 1 ? "1st" : "2nd"} semester',
+                            );
+                        }
+                    }
                 }
                 if (widget.startTeachersTour) {
                    GuidePointer.dismiss(); // Clean up tour immediately
@@ -938,8 +1262,9 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                    );
                 }
               },
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
+
+              icon: Icon(editSubject != null ? Icons.save : Icons.add, size: 18),
+              label: Text(editSubject != null ? 'Update' : 'Add', style: const TextStyle(fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: HexColor("#116754"),
                 foregroundColor: Colors.white,
@@ -1088,7 +1413,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       }
 
       // 3. Remove this section from the teacher's sections list if they are not the adviser
-      if (teacherUid != _sectionAdviserUid) {
+      if (teacherUid != _sectionAdviserUid && !teacherUid.startsWith('demo_')) {
         await firestore.collection('teachers').doc(teacherUid).update({
           'sections': FieldValue.arrayRemove([widget.sectionName])
         });
@@ -1098,11 +1423,13 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         _schedule = newSchedule;
       });
 
-      await _addTeacherNotification(
-        teacherUid,
-        'Removed from Section',
-        'You have been removed from section ${widget.sectionName} and your subject assignments have been cleared.',
-      );
+      if (!teacherUid.startsWith('demo_')) {
+          await _addTeacherNotification(
+            teacherUid,
+            'Removed from Section',
+            'You have been removed from section ${widget.sectionName} and your subject assignments have been cleared.',
+          );
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1129,9 +1456,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         uid: 'demo_student',
         name: 'Bill Gates',
         studentId: '',
+        profileImageThumbnail: billGatesBase64,
          grades: {
           // Semester 1 Subjects (Q1, Q2)
-          'Math': {'q1': 90, 'q2': 92},
+          'Math': {'q1': 0, 'q2': 92}, // Q1 is 0 to allow user input in tutorial
           'Science': {'q1': 88, 'q2': 89},
           'English': {'q1': 91, 'q2': 90},
           'Filipino': {'q1': 85, 'q2': 87},
@@ -1142,6 +1470,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         },
       )
     ];
+
 
     if (mounted) {
       setState(() {
@@ -1173,7 +1502,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                  context,
                  MaterialPageRoute(
                    builder: (context) => const SectionDetailPage(
-                     sectionName: "Demo Class",
+                     sectionName: "[TUTORIAL] Demo Class",
                      startGradeTour: true,
                    ),
                  ),
@@ -1192,19 +1521,18 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       steps: [
         GuideStep(
           targetKey: _tourStudentKey,
-          title: "Step 2: Enter Grades",
-          content: "Tap any student in the list to open their detailed grade sheet. Let's try it with Bill Gates.",
-          buttonLabel: "I'll do it!",
-          isBlocking: true, // IMPORTANT: True blocking for info step
+          title: "Step 1: View Grades",
+          content: "Tap the student's name to open their grade sheet. Let's try it with Bill Gates.",
+          hideButton: true, // Allow user to tap the spotlighted student directly
+          isBlocking: true,
         ),
       ],
-      totalStepsOverride: 5,
-      onComplete: () {
-        // Optional: revert to real data after tour?
-        // For now, let's keep it simple. They can go back and re-enter.
-      },
+      totalStepsOverride: 4, // Standalone 4-step Grades tour
+      initialStepOffset: 0,
+      onComplete: () {},
     );
   }
+
 
   void _initializeTeachersTourData() {
     setState(() {
@@ -1266,6 +1594,14 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
            content: "Select 'John Smith' from the list.",
            hideButton: true,
            isBlocking: true,
+        ),
+        GuideStep(
+           targetKey: _dialogTbaKey,
+           title: "Step 3.5: Time To Be Announced",
+           content: "You can check this box if the schedule is not yet finalized. Tap 'Next' to skip.",
+           hideButton: false, // Allow skipping
+           buttonLabel: "Next",
+           isBlocking: false,
         ),
         GuideStep(
            targetKey: _dialogDaysKey,
@@ -1373,61 +1709,156 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     );
   }
 
-  Widget _buildStudentsTab({required bool isDesktop}) {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
-    if (_students.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+  Widget _buildSectionHeader() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+      decoration: BoxDecoration(
+        color: HexColor("#116754").withValues(alpha: 0.05),
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(32),
+          bottomRight: Radius.circular(32),
+        ),
+      ),
+      child: Column(
+        children: [
+          Stack(
             children: [
-              Icon(Icons.people, size: 80, color: Colors.grey[400]),
-              const SizedBox(height: 16),
-              Text(
-                'No students in this section',
-                key: _emptyStateKey,
-                style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 2.0),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.1),
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: CircleAvatar(
+                  radius: 50,
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  backgroundImage: _sectionThumbnailBytes != null
+                      ? MemoryImage(_sectionThumbnailBytes!)
+                      : (_sectionImageUrl != null
+                          ? NetworkImage(_sectionImageUrl!)
+                          : null) as ImageProvider?,
+                  child: (_sectionThumbnailBytes == null && _sectionImageUrl == null)
+                      ? Icon(Icons.class_, size: 50, color: HexColor("#116754"))
+                      : null,
+                ),
               ),
-              const SizedBox(height: 8),
-              Text('Tap the + button to add a student', style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+              if (_isCurrentUserAdviser)
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: GestureDetector(
+                    onTap: _pickSectionImage,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: HexColor("#116754"),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: _isSavingSectionImage
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.camera_alt, size: 16, color: Colors.white),
+                    ),
+                  ),
+                ),
             ],
           ),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              key: _studentsHeaderKey,
-              'Students (${_students.length})',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: HexColor("#116754")),
+          const SizedBox(height: 16),
+          Text(
+            widget.sectionName,
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: HexColor("#116754"),
             ),
-            const SizedBox(height: 16),
-            if (isDesktop)
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 12,
-                  mainAxisExtent: 150,
-                ),
-                itemCount: _students.length,
-                itemBuilder: (context, index) => _buildStudentItem(_students[index], index, key: index == 0 ? _tourStudentKey : null),
-              )
-            else
-              Column(
-                children: _students.asMap().entries.map((entry) => _buildStudentItem(entry.value, entry.key, key: entry.key == 0 ? _tourStudentKey : null)).toList(),
+          ),
+          if (_sectionAdviserName != null)
+            Text(
+              'Adviser: $_sectionAdviserName',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: HexColor("#116754"),
               ),
-          ],
-        ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStudentsTab({required bool isDesktop}) {
+    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          _buildSectionHeader(),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: _students.isEmpty 
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(40),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.people, size: 80, color: Colors.grey[400]),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No students in this section',
+                          key: _emptyStateKey,
+                          style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Tap the + button to add a student', style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+                      ],
+                    ),
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      key: _studentsHeaderKey,
+                      'Students (${_students.length})',
+                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: HexColor("#116754")),
+                    ),
+                    const SizedBox(height: 16),
+                    if (isDesktop)
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 12,
+                          mainAxisExtent: 150,
+                        ),
+                        itemCount: _students.length,
+                        itemBuilder: (context, index) => _buildStudentItem(_students[index], index, key: index == 0 ? _tourStudentKey : null),
+                      )
+                    else
+                      Column(
+                        children: _students.asMap().entries.map((entry) => _buildStudentItem(entry.value, entry.key, key: entry.key == 0 ? _tourStudentKey : null)).toList(),
+                      ),
+                  ],
+                ),
+          ),
+        ],
       ),
     );
   }
@@ -1478,9 +1909,27 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
           ),
           child: Row(
             children: [
-              CircleAvatar(
-                backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                child: Icon(Icons.person, color: HexColor("#116754")),
+
+
+// ... inside _buildStudentItem ...
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 2.0),
+                ),
+                child: CircleAvatar(
+                  radius: 30, // Increased size
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  backgroundImage: student.profileImageThumbnail != null
+                      ? MemoryImage(base64Decode(student.profileImageThumbnail!))
+                      : (student.profileImageUrl != null
+                          ? NetworkImage(student.profileImageUrl!)
+                          : null) as ImageProvider?,
+                  child: (student.profileImageThumbnail == null && student.profileImageUrl == null)
+                      ? Icon(Icons.person, color: HexColor("#116754"), size: 30)
+                      : null,
+                ),
+
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -1525,7 +1974,8 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
   Widget _buildTeachersTab({required bool isDesktop}) {
     // Group teachers by semester
     final Map<int, Set<String>> semTeachers = {1: {}, 2: {}};
-    final Map<String, Set<String>> teacherSubjects = {}; // Use Set for unique subjects
+    // Map<TeacherUID, List<Map<String, dynamic>>>
+    final Map<String, List<Map<String, dynamic>>> teacherStructuredSubjects = {}; 
     final Map<String, String> teacherNames = {};
 
     for (var s in _schedule) {
@@ -1538,29 +1988,13 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
         teacherNames[uid] = name ?? 'Unknown';
         semTeachers[sem]?.add(uid);
         if (subject != null) {
-          teacherSubjects.putIfAbsent(uid, () => {}).add('$subject (Sem $sem)');
+          teacherStructuredSubjects.putIfAbsent(uid, () => []);
+          final existing = teacherStructuredSubjects[uid]!.any((s) => s['subject'] == subject && s['semester'] == sem);
+          if (!existing) {
+            teacherStructuredSubjects[uid]!.add({'subject': subject, 'semester': sem});
+          }
         }
       }
-    }
-
-
-    if (teacherNames.isEmpty && _sectionAdviserUid == null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.school, size: 80, color: Colors.grey[400]),
-              const SizedBox(height: 16),
-              const Text('No teachers assigned yet', style: TextStyle(fontSize: 18, color: Colors.grey)),
-              const SizedBox(height: 8),
-              if (_isAdviser)
-                const Text('Tap the schedule icon above to assign teachers', style: TextStyle(fontSize: 14, color: Colors.grey)),
-            ],
-          ),
-        ),
-      );
     }
 
     final List<Widget> children = [];
@@ -1578,11 +2012,11 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       );
 
       // Adviser's subjects from schedule
-      final adviserSubjectsList = (teacherSubjects[_sectionAdviserUid] ?? <String>{}).toList();
+      // final adviserSubjectsList = (teacherSubjects[_sectionAdviserUid] ?? <String>{}).toList();
       children.add(_buildTeacherItem(
         _sectionAdviserUid!, 
         _sectionAdviserName ?? 'Adviser', 
-        adviserSubjectsList,
+        teacherStructuredSubjects[_sectionAdviserUid] ?? [],
         isAdviserSection: true
       ));
     }
@@ -1591,46 +2025,69 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     for (int semester in [1, 2]) {
       if (semTeachers[semester]!.isNotEmpty) {
         children.add(
-          Padding(
-            padding: const EdgeInsets.only(top: 24, bottom: 16),
-            child: Text(
-              '${semester == 1 ? "1st" : "2nd"} Semester Teachers',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: HexColor("#116754")),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              initiallyExpanded: true,
+              iconColor: HexColor("#116754"),
+              collapsedIconColor: HexColor("#116754"),
+              trailing: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: HexColor("#116754").withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.expand_more, color: HexColor("#116754"), size: 24),
+              ),
+              title: Text(
+                '${semester == 1 ? "1st" : "2nd"} Semester Teachers',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: HexColor("#116754")),
+              ),
+              children: [
+                if (isDesktop)
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 16,
+                      mainAxisSpacing: 12,
+                      mainAxisExtent: 180,
+                    ),
+                    itemCount: semTeachers[semester]!.length,
+                    itemBuilder: (context, index) {
+                      final uid = semTeachers[semester]!.toList()[index];
+                      final allSubjects = teacherStructuredSubjects[uid] ?? [];
+                      final semesterSubjects = allSubjects.where((s) => s['semester'] == semester).toList();
+                      return _buildTeacherItem(
+                        uid, 
+                        teacherNames[uid] ?? 'Unknown', 
+                        semesterSubjects,
+                        defaultSemester: semester,
+                      );
+                    },
+                  )
+                else
+                  ...semTeachers[semester]!.map((uid) {
+                    final allSubjects = teacherStructuredSubjects[uid] ?? [];
+                    final semesterSubjects = allSubjects.where((s) => s['semester'] == semester).toList();
+                    return Column(
+                      children: [
+                        _buildTeacherItem(
+                          uid, 
+                          teacherNames[uid] ?? 'Unknown', 
+                          semesterSubjects,
+                          defaultSemester: semester,
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                    );
+                  }),
+              ],
             ),
           ),
         );
-        
-        if (isDesktop) {
-          children.add(
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 16,
-                mainAxisSpacing: 12,
-                mainAxisExtent: 130,
-              ),
-              itemCount: semTeachers[semester]!.length,
-              itemBuilder: (context, index) {
-                final uid = semTeachers[semester]!.toList()[index];
-                return _buildTeacherItem(
-                  uid, 
-                  teacherNames[uid] ?? 'Unknown', 
-                  (teacherSubjects[uid] ?? <String>{}).toList()
-                );
-              },
-            )
-          );
-        } else {
-          children.addAll(semTeachers[semester]!.map((uid) {
-            return _buildTeacherItem(
-              uid, 
-              teacherNames[uid] ?? 'Unknown', 
-              (teacherSubjects[uid] ?? <String>{}).toList()
-            );
-          }));
-        }
       }
     }
 
@@ -1652,17 +2109,39 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     }
 
     return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: children,
-        ),
+      child: Column(
+        children: [
+          _buildSectionHeader(),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: children.isEmpty && _sectionAdviserUid == null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(40),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.school, size: 80, color: Colors.grey[400]),
+                        const SizedBox(height: 16),
+                        const Text('No teachers assigned yet', style: TextStyle(fontSize: 18, color: Colors.grey)),
+                        const SizedBox(height: 8),
+                        if (_isAdviser)
+                          const Text('Tap the schedule icon above to assign teachers', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: children,
+                ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildTeacherItem(String uid, String name, List<String> subjects, {bool isAdviserSection = false}) {
+  Widget _buildTeacherItem(String uid, String name, List<Map<String, dynamic>> subjects, {bool isAdviserSection = false, int? defaultSemester}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: InkWell(
@@ -1691,15 +2170,30 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
           ),
           child: Row(
             children: [
-              CircleAvatar(
-                backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                child: Icon(Icons.school, color: HexColor("#116754")),
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 2.0),
+                ),
+                child: CircleAvatar(
+                  radius: 30, // Increased size
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  backgroundImage: _teacherProfiles[uid]?['profileImageThumbnail'] != null
+                      ? MemoryImage(base64Decode(_teacherProfiles[uid]!['profileImageThumbnail']))
+                      : (_teacherProfiles[uid]?['profileImageUrl'] != null
+                          ? NetworkImage(_teacherProfiles[uid]!['profileImageUrl'])
+                          : null) as ImageProvider?,
+                  child: (_teacherProfiles[uid]?['profileImageThumbnail'] == null && _teacherProfiles[uid]?['profileImageUrl'] == null)
+                      ? Icon(Icons.school, color: HexColor("#116754"), size: 30)
+                      : null,
+                ),
+
               ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 4),
@@ -1718,12 +2212,39 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
                         ),
                       ),
                     ),
+                    const SizedBox(height: 8),
                     if (subjects.isNotEmpty)
-                      Text(
-                        'Subjects: ${subjects.join(", ")}',
-                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 1,
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: subjects.map((subjData) {
+                           final subjName = subjData['subject'] as String;
+                           final sem = subjData['semester'] as int;
+                           return InkWell(
+                             onTap: _isAdviser ? () {
+                                _showAddSubjectDialog(
+                                    editSubject: subjName, 
+                                    editTeacherUid: uid, 
+                                    editSemester: sem
+                                );
+                             } : null,
+                             child: Chip(
+                               label: Text('${subjName.toUpperCase()} (Sem $sem)', style: const TextStyle(fontSize: 12)),
+                               backgroundColor: Colors.grey[100],
+                               padding: EdgeInsets.zero,
+                               visualDensity: VisualDensity.compact,
+                               deleteIcon: _isAdviser ? const Icon(Icons.edit, size: 14, color: Colors.blue) : null,
+                               deleteButtonTooltipMessage: 'Edit',
+                               onDeleted: _isAdviser ? () {
+                                   _showAddSubjectDialog(
+                                    editSubject: subjName, 
+                                    editTeacherUid: uid, 
+                                    editSemester: sem
+                                );
+                               } : null,
+                             ),
+                           );
+                        }).toList(),
                       ),
                   ],
                 ),
@@ -1731,7 +2252,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
               if (_isAdviser) ...[
                 IconButton(
                   icon: const Icon(Icons.add_circle_outline, size: 20, color: Colors.blue),
-                  onPressed: () => _showAddSubjectDialog(initialTeacherUid: uid, initialTeacherName: name),
+                  onPressed: () => _showAddSubjectDialog(initialTeacherUid: uid, initialTeacherName: name, editSemester: defaultSemester),
                   tooltip: 'Add schedule to this teacher',
                 ),
                 if (uid == _sectionAdviserUid)
@@ -1797,7 +2318,7 @@ class _AddStudentDialogState extends State<_AddStudentDialog> {
           steps: [
             GuideStep(
               targetKey: _studentNameKey,
-              title: "Found a Student!",
+              title: "Step 2: Found a Student!",
               content: "This student is looking for a class. You can see their name and details here.",
               buttonLabel: "Next",
             ),
@@ -1808,8 +2329,11 @@ class _AddStudentDialogState extends State<_AddStudentDialog> {
               hideButton: true,
             ),
           ],
+          totalStepsOverride: 7,
+          initialStepOffset: 1,
           onComplete: () {},
         );
+
       });
     }
   }
@@ -1874,9 +2398,24 @@ class _AddStudentDialogState extends State<_AddStudentDialog> {
                         return Container(
                           key: index == 0 ? _studentNameKey : null,
                           child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                              child: Icon(Icons.person, color: HexColor("#116754")),
+                            leading: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.black, width: 2.0),
+                              ),
+                              child: CircleAvatar(
+                                radius: 30, // Increased size
+                                backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                                backgroundImage: student['profileImageThumbnail'] != null
+                                    ? MemoryImage(base64Decode(student['profileImageThumbnail']))
+                                    : (student['profileImageUrl'] != null
+                                        ? NetworkImage(student['profileImageUrl'])
+                                        : null) as ImageProvider?,
+                                child: (student['profileImageThumbnail'] == null && student['profileImageUrl'] == null)
+                                    ? Icon(Icons.person, color: HexColor("#116754"), size: 30)
+                                    : null,
+                              ),
+
                             ),
                             title: Text(student['name'] as String),
                             subtitle: Text(student['email'] as String),

@@ -9,7 +9,7 @@ class UpdateChecker {
     try {
       // Get local app info
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
-      int currentBuildNumber = int.parse(packageInfo.buildNumber);
+      int currentBuildNumber = int.tryParse(packageInfo.buildNumber) ?? 0;
       String currentVersion = packageInfo.version;
 
       // Get remote app config from Firestore
@@ -35,6 +35,7 @@ class UpdateChecker {
       }
 
       String latestVersion = data['latest_version'] ?? currentVersion;
+      String releaseNotes = data['release_notes'] ?? 'New version available!';
       
       // Select the correct download URL based on the platform
       String downloadUrl = '';
@@ -46,25 +47,30 @@ class UpdateChecker {
         downloadUrl = data['download_url'] ?? '';
       }
 
-      String releaseNotes = data['release_notes'] ?? 'New version available!';
-      
       // Safely parse is_emergency
       var emergencyRaw = data['is_emergency'];
-      bool isEmergencyUpdate = true; // Default to true if missing
+      bool isEmergencyUpdate = false; 
       if (emergencyRaw is bool) {
         isEmergencyUpdate = emergencyRaw;
       } else if (emergencyRaw is String) {
          isEmergencyUpdate = emergencyRaw.toLowerCase() == 'true';
       }
 
-      debugPrint('UpdateChecker: Local build: $currentBuildNumber, Remote build: $latestBuildNumber, Emergency: $isEmergencyUpdate');
-
+      // IMPROVED VERSION DETECTION:
+      bool isUpdateAvailable = false;
       if (latestBuildNumber > currentBuildNumber) {
-        // Show update dialog
+        isUpdateAvailable = true;
+      } else if (latestVersion != currentVersion) {
+        isUpdateAvailable = _isNewerVersion(latestVersion, currentVersion);
+      }
+
+      debugPrint('UpdateChecker: Local v$currentVersion($currentBuildNumber), Remote v$latestVersion($latestBuildNumber), Update: $isUpdateAvailable');
+
+      if (isUpdateAvailable) {
         if (context.mounted) {
           showDialog(
             context: context,
-            barrierDismissible: !isEmergencyUpdate, // If emergency, force the update
+            barrierDismissible: !isEmergencyUpdate,
             builder: (context) => UpdateDialog(
               latestVersion: latestVersion,
               currentVersion: currentVersion,
@@ -78,6 +84,21 @@ class UpdateChecker {
       }
     } catch (e) {
       debugPrint('UpdateChecker Error: $e');
+    }
+  }
+
+  static bool _isNewerVersion(String latest, String current) {
+    try {
+      List<int> latestParts = latest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+      List<int> currentParts = current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+      
+      for (int i = 0; i < latestParts.length && i < currentParts.length; i++) {
+        if (latestParts[i] > currentParts[i]) return true;
+        if (latestParts[i] < currentParts[i]) return false;
+      }
+      return latestParts.length > currentParts.length;
+    } catch (e) {
+      return latest != current;
     }
   }
 }

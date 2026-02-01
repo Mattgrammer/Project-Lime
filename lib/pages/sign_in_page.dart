@@ -9,7 +9,6 @@ import 'profile_router.dart';
 
 // Firebase imports
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:lime/services/notification_service.dart';
 import 'package:lime/services/connectivity_service.dart';
 
 void main() async {
@@ -109,12 +108,6 @@ class _SignInPageState extends State<SignInPage> {
 
       // Navigate to home on success
       if (mounted) {
-        // Trigger welcome notification
-        NotificationService.showNotification(
-          id: 0,
-          title: 'Welcome Back!',
-          body: 'You have successfully signed in to LIME.',
-        );
         Navigator.pushReplacementNamed(context, '/home');
       }
     } on FirebaseAuthException catch (e) {

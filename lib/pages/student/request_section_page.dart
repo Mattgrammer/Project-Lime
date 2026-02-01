@@ -3,6 +3,8 @@ import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
+import 'dart:convert';
+import '../../services/fcm_service.dart';
 
 class RequestSectionPage extends StatefulWidget {
   const RequestSectionPage({super.key});
@@ -17,6 +19,9 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
   List<String> _filteredSections = [];
   Set<String> _pendingRequests = {};
   Set<String> _assignedSections = {};
+  final Map<String, String?> _sectionThumbnails = {};
+  final Map<String, String?> _sectionImageUrls = {};
+  final Map<String, String> _sectionOwners = {};
 
   bool _isLoading = true;
   StreamSubscription? _studentSubscription;
@@ -27,6 +32,12 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
     _loadData(); // Initial load for sections list
     _listenToStudentData(); // Real-time listener for requests/assignments
     _searchController.addListener(_filterSections);
+    // Safety timeout to prevent infinite spinner
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
+      }
+    });
   }
 
   @override
@@ -68,31 +79,36 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
 
 
 
-  // Map to track which teacher owns which section
-  final Map<String, String> _sectionOwners = {};
-
   Future<void> _loadData() async {
     try {
       final firestore = FirebaseFirestore.instance;
 
-      // 1. Fetch Teachers & Sections (Available for all students)
-      final teachersSnapshot = await firestore
-          .collection('teachers')
-          .where('teacherType', isEqualTo: 'Adviser')
+      // Fetch all sections directly to get thumbnails and adviser info
+      final sectionsSnapshot = await firestore
+          .collection('sections')
           .get();
 
       final Set<String> sections = {};
       _sectionOwners.clear();
+      _sectionThumbnails.clear();
+      _sectionImageUrls.clear();
 
-      for (var doc in teachersSnapshot.docs) {
+      for (var doc in sectionsSnapshot.docs) {
+        final sectionName = doc.id;
+        
+        // Skip tutorial/demo sections
+        if (sectionName.contains('[TUTORIAL]')) continue;
+
         final data = doc.data();
-        if (data['sections'] is List) {
-          final teacherSections = List<String>.from(data['sections']);
-          for (var section in teacherSections) {
-            sections.add(section);
-            _sectionOwners[section] = doc.id;
-          }
+        sections.add(sectionName);
+        
+        final adviserUid = data['adviserUid'] as String?;
+        if (adviserUid != null) {
+          _sectionOwners[sectionName] = adviserUid;
         }
+        
+        _sectionThumbnails[sectionName] = data['sectionImageThumbnail'] as String?;
+        _sectionImageUrls[sectionName] = data['sectionImageUrl'] as String?;
       }
 
       if (mounted) {
@@ -143,6 +159,14 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
         'studentName': studentName,
         'sectionName': sectionName,
       });
+
+      // NEW: Trigger Push Notification
+      FCMService.sendNotification(
+        recipientUid: adviserUid,
+        title: 'New Join Request',
+        body: '$studentName requested to join section: $sectionName',
+        data: {'type': 'join_request', 'studentUid': studentUid},
+      );
       return docRef.id;
     } catch (e) {
       debugPrint('Error sending notification to teacher: $e');
@@ -248,6 +272,14 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
                   'sectionName': sectionName,
                 });
                notified = true;
+
+               // NEW: Trigger Push Notification
+               FCMService.sendNotification(
+                 recipientUid: adviserUid,
+                 title: 'Request Cancelled',
+                 body: '$studentName cancelled their request to join $sectionName.',
+                 data: {'type': 'request_cancelled'},
+               );
             }
           }
         } catch (e) {
@@ -403,15 +435,33 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
         child: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: HexColor("#116754").withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.1),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
-              child: Icon(
-                Icons.class_,
-                color: HexColor("#116754"),
-                size: 24,
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 1.5),
+                ),
+                child: CircleAvatar(
+                  radius: 24,
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  backgroundImage: _sectionThumbnails[section] != null
+                      ? MemoryImage(base64Decode(_sectionThumbnails[section]!))
+                      : (_sectionImageUrls[section] != null
+                          ? NetworkImage(_sectionImageUrls[section]!)
+                          : null) as ImageProvider?,
+                  child: (_sectionThumbnails[section] == null && _sectionImageUrls[section] == null)
+                      ? Icon(Icons.class_, color: HexColor("#116754"), size: 24)
+                      : null,
+                ),
               ),
             ),
             const SizedBox(width: 16),

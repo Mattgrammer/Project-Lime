@@ -22,6 +22,17 @@ class _ProfileRouterState extends State<ProfileRouter> {
   void initState() {
     super.initState();
     _checkUserType();
+    
+    // Safety timeout: If still loading after 5 seconds, something is wrong.
+    // Try to force a decision or show an error.
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted && _isLoading && _userType == null) {
+        debugPrint('ProfileRouter: Loading timeout reached.');
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    });
   }
 
   Future<void> _checkUserType() async {
@@ -96,6 +107,13 @@ class _ProfileRouterState extends State<ProfileRouter> {
           _isLoading = false;
         });
       }
+      
+      // If after checking both collections we still have no user type,
+      // and it's not a "needs complete" case, then the user record is missing.
+      if (newUserType == null && !newNeedsCompleteProfile) {
+        debugPrint('ProfileRouter: User not found in either collection.');
+        // Optional: Force logout or redirect to a "Finish Setup" page
+      }
     } catch (e) {
       debugPrint('Error loading user type: $e');
       if (mounted) {
@@ -142,12 +160,27 @@ class _ProfileRouterState extends State<ProfileRouter> {
     } else if (_userType == 'Teacher') {
       return const ProfileTeacherPage();
     } else {
-      // If we are here, something is wrong or still loading. 
-      // Do NOT default to setup if we haven't finished the refresh check.
+      // Fallback for missing user record or timeout
       return Scaffold(
         body: Center(
-          child: CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(HexColor("#116754")),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 48, color: HexColor("#116754")),
+              const SizedBox(height: 16),
+              const Text(
+                'Account Setup Incomplete',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text('Please try logging in again or contact support.'),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => FirebaseAuth.instance.signOut(),
+                style: ElevatedButton.styleFrom(backgroundColor: HexColor("#116754")),
+                child: const Text('Back to Login', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
         ),
       );

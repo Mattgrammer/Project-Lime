@@ -2,16 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-// Removed shared_preferences import
+import 'dart:async';
+import 'dart:convert';
 
 class InboxPage extends StatefulWidget {
-  const InboxPage({super.key});
+  final bool isStandalone;
+  const InboxPage({super.key, this.isStandalone = false});
 
   @override
   State<InboxPage> createState() => _InboxPageState();
 }
 
 class _InboxPageState extends State<InboxPage> {
+  Map<String, Map<String, dynamic>> _teacherProfiles = {};
+  StreamSubscription? _profilesSub;
+
+  @override
+  void dispose() {
+    _profilesSub?.cancel();
+    super.dispose();
+  }
 
   Stream<List<InboxMessage>> _inboxStream() {
     final user = FirebaseAuth.instance.currentUser;
@@ -29,6 +39,26 @@ class _InboxPageState extends State<InboxPage> {
         data['id'] = doc.id; // Inject doc ID
         return InboxMessage.fromJson(data);
       }).toList();
+    });
+  }
+
+  void _listenToProfiles(List<String> uids) {
+    if (uids.isEmpty) return;
+
+    _profilesSub?.cancel();
+    _profilesSub = FirebaseFirestore.instance
+        .collection('teachers')
+        .where(FieldPath.documentId, whereIn: uids)
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      final Map<String, Map<String, dynamic>> updatedProfiles = {};
+      for (var doc in snapshot.docs) {
+        updatedProfiles[doc.id] = doc.data();
+      }
+      setState(() {
+        _teacherProfiles = updatedProfiles;
+      });
     });
   }
 
@@ -108,53 +138,67 @@ class _InboxPageState extends State<InboxPage> {
             final messages = snapshot.data ?? [];
             final unreadCount = messages.where((m) => !m.read).length;
 
-            return SingleChildScrollView(
+            // Extract sender UIDs for assignment notifications
+            final senderUids = messages
+                .where((m) => m.type == 'assignment' && m.senderUid != null)
+                .map((m) => m.senderUid!)
+                .toSet()
+                .toList();
+
+            // Fetch profiles if any are missing
+            final missingUids = senderUids.where((uid) => !_teacherProfiles.containsKey(uid)).toList();
+            if (missingUids.isNotEmpty) {
+              _listenToProfiles(senderUids);
+            }
+
+            final content = SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               child: Padding(
                 padding: EdgeInsets.all(isMobile ? 16 : 24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Inbox',
-                                style: TextStyle(
-                                  fontSize: isMobile ? 28 : 32,
-                                  fontWeight: FontWeight.bold,
-                                  color: HexColor("#116754"),
+                    if (!widget.isStandalone) // Only show title in body if not standalone (AppBar shows it otherwise)
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Inbox',
+                                  style: TextStyle(
+                                    fontSize: isMobile ? 28 : 32,
+                                    fontWeight: FontWeight.bold,
+                                    color: HexColor("#116754"),
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                unreadCount == 0
-                                    ? 'No unread messages'
-                                    : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey[600],
+                                const SizedBox(height: 4),
+                                Text(
+                                  unreadCount == 0
+                                      ? 'No unread messages'
+                                      : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.grey[600],
+                                  ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (messages.isNotEmpty)
-                          TextButton.icon(
-                            onPressed: _clearAll,
-                            icon: const Icon(Icons.clear_all, size: 18),
-                            label: const Text('Clear All'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: HexColor("#116754"),
+                              ],
                             ),
                           ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
+                          if (messages.isNotEmpty)
+                            TextButton.icon(
+                              onPressed: _clearAll,
+                              icon: const Icon(Icons.clear_all, size: 18),
+                              label: const Text('Clear All'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: HexColor("#116754"),
+                              ),
+                            ),
+                        ],
+                      ),
+                    if (!widget.isStandalone) const SizedBox(height: 24),
 
                     if (messages.isEmpty)
                       SizedBox(
@@ -217,6 +261,30 @@ class _InboxPageState extends State<InboxPage> {
                 ),
               ),
             );
+
+            if (widget.isStandalone) {
+              return Scaffold(
+                backgroundColor: Colors.white,
+                appBar: AppBar(
+                  title: const Text('Inbox', style: TextStyle(fontWeight: FontWeight.bold)),
+                  backgroundColor: HexColor("#116754"),
+                  foregroundColor: Colors.white,
+                  centerTitle: true,
+                  elevation: 0,
+                  actions: [
+                    if (messages.isNotEmpty)
+                      IconButton(
+                        onPressed: _clearAll,
+                        icon: const Icon(Icons.clear_all),
+                        tooltip: 'Clear All',
+                      ),
+                  ],
+                ),
+                body: content,
+              );
+            }
+
+            return content;
           },
         );
       },
@@ -275,15 +343,35 @@ class _InboxPageState extends State<InboxPage> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
-                child: Icon(
-                  Icons.notifications,
-                  color: HexColor("#116754"),
-                  size: 20,
+              if (msg.type == 'assignment' && msg.senderUid != null)
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black, width: 1.5),
+                  ),
+                  child: CircleAvatar(
+                    radius: 20,
+                    backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                    backgroundImage: _teacherProfiles[msg.senderUid]?['profileImageThumbnail'] != null
+                        ? MemoryImage(base64Decode(_teacherProfiles[msg.senderUid]!['profileImageThumbnail']))
+                        : (_teacherProfiles[msg.senderUid]?['profileImageUrl'] != null
+                            ? NetworkImage(_teacherProfiles[msg.senderUid]!['profileImageUrl'])
+                            : null) as ImageProvider?,
+                    child: (_teacherProfiles[msg.senderUid]?['profileImageThumbnail'] == null && _teacherProfiles[msg.senderUid]?['profileImageUrl'] == null)
+                        ? Icon(Icons.person, color: HexColor("#116754"), size: 20)
+                        : null,
+                  ),
+                )
+              else
+                CircleAvatar(
+                  radius: 20,
+                  backgroundColor: HexColor("#116754").withValues(alpha: 0.1),
+                  child: Icon(
+                    Icons.notifications,
+                    color: HexColor("#116754"),
+                    size: 20,
+                  ),
                 ),
-              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -348,6 +436,7 @@ class InboxMessage {
   final String timestamp;
   bool read;
   final String type;
+  final String? senderUid;
 
   InboxMessage({
     required this.id,
@@ -356,6 +445,7 @@ class InboxMessage {
     required this.timestamp,
     required this.read,
     required this.type,
+    this.senderUid,
   });
 
   Map<String, dynamic> toJson() {
@@ -366,6 +456,7 @@ class InboxMessage {
       'timestamp': timestamp,
       'read': read,
       'type': type,
+      if (senderUid != null) 'senderUid': senderUid,
     };
   }
 
@@ -377,6 +468,7 @@ class InboxMessage {
       timestamp: json['timestamp'] as String? ?? DateTime.now().toIso8601String(),
       read: json['read'] as bool? ?? false,
       type: json['type'] as String? ?? 'general',
+      senderUid: json['senderUid'] as String?,
     );
   }
 }
