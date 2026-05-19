@@ -3,7 +3,7 @@ description: "A new Flutter project."
 
 publish_to: 'none'
 
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: ^3.10.4
@@ -28,11 +28,14 @@ dependencies:
   flutter_local_notifications: ^17.1.2
   image_cropper: ^8.0.0
   flutter_image_compress: ^2.4.0
+  image: ^4.0.0
   connectivity_plus: ^6.1.0
   http: ^1.1.0
   delightful_toast: ^1.1.0
   firebase_messaging: ^16.1.1
   googleapis_auth: ^1.4.1
+  ota_update: ^7.1.0
+  path_provider: ^2.1.0
 
 
 
@@ -50,6 +53,7 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
+  windows: true
   image_path: "lib/pages/assets/LIME ASSETS/lime.png"
   min_sdk_android: 21
 
@@ -78,7 +82,7 @@ inno_bundle:
   version: 1.0.0
   publisher: Mattgrammer
   executable: LIME.exe
-  icon: windows/runner/resources/app_icon.ico
+  icon: windows/runner/resources/lime_logo.ico
   admin: false
   languages:
     - english

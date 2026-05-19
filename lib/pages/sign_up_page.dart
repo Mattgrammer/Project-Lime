@@ -488,7 +488,7 @@ class _SignUpPageState extends State<SignUpPage> {
                                     decoration: InputDecoration(
                                       labelText: 'Password',
                                       labelStyle: TextStyle(fontSize: fieldTextSize),
-                                      prefixIcon: GestureDetector(
+                                      suffixIcon: GestureDetector(
                                         onTap: () => setState(() => _passwordVisible = !_passwordVisible),
                                         child: Icon(
                                           _passwordVisible ? Icons.lock_open : Icons.lock,
@@ -522,7 +522,7 @@ class _SignUpPageState extends State<SignUpPage> {
                                     decoration: InputDecoration(
                                       labelText: 'Confirm Password',
                                       labelStyle: TextStyle(fontSize: fieldTextSize),
-                                      prefixIcon: GestureDetector(
+                                      suffixIcon: GestureDetector(
                                         onTap: () => setState(() => _confirmPasswordVisible = !_confirmPasswordVisible),
                                         child: Icon(
                                           _confirmPasswordVisible ? Icons.lock_open : Icons.lock,

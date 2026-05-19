@@ -8,9 +8,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:lime/pages/teacher/section_detail_page.dart';
 import 'package:lime/widgets/lime_dropdown.dart';
+import 'package:lime/utils/image_compression_utils.dart';
 
 class MyClassesPage extends StatefulWidget {
   final Stream<List<DocumentSnapshot>>? sectionsStream;
@@ -59,6 +59,7 @@ class MyClassesPageState extends State<MyClassesPage> {
       ),
     ).then((_) {
       if (mounted) {
+        resetTour();
         setState(() {
           _isGradeTourActive = false;
         });
@@ -87,7 +88,7 @@ class MyClassesPageState extends State<MyClassesPage> {
             startClassesTour: true,
           ),
         ),
-      );
+      ).then((_) => resetTour());
     });
   }
 
@@ -112,7 +113,7 @@ class MyClassesPageState extends State<MyClassesPage> {
             startTeachersTour: true,
           ),
         ),
-      );
+      ).then((_) => resetTour());
     });
   }
 
@@ -183,19 +184,29 @@ class MyClassesPageState extends State<MyClassesPage> {
       }
     });
 
-    // Optimized sections listener
+    // Optimized sections listener - listen to all sections the teacher is associated with
     _sectionsSubscription?.cancel();
     if (widget.sectionsStream != null) {
       _sectionsSubscription = widget.sectionsStream!.listen((snapshots) {
         _processSections(snapshots, user.uid);
       });
     } else {
+      // Listen to all sections where user is either adviser OR in teacherUids
       _sectionsSubscription = firestore
           .collection('sections')
-          .where('teacherUids', arrayContains: user.uid)
           .snapshots()
           .listen((snapshot) {
-        _processSections(snapshot.docs, user.uid);
+        // Filter to only sections this teacher is associated with
+        final filteredDocs = snapshot.docs.where((doc) {
+          final data = doc.data();
+          final adviserUid = data['adviserUid'] as String?;
+          final teacherUids = data['teacherUids'] as List?;
+
+          // Include section if user is adviser OR in teacherUids
+          return adviserUid == user.uid || (teacherUids?.contains(user.uid) ?? false);
+        }).toList();
+
+        _processSections(filteredDocs, user.uid);
       });
     }
   }
@@ -276,7 +287,7 @@ class MyClassesPageState extends State<MyClassesPage> {
                    Text(
                      'Limit Reached',
                      style: TextStyle(
-                       fontSize: 22, 
+                       fontSize: 22,
                        fontWeight: FontWeight.bold,
                        color: Colors.amber.shade900,
                      ),
@@ -320,8 +331,10 @@ class MyClassesPageState extends State<MyClassesPage> {
     String? selectedGrade;
     File? selectedImage;
     String? imageThumbnail;
+    bool isCreating = false;
 
     Future<void> pickImage(StateSetter dialogSetState) async {
+      final messenger = ScaffoldMessenger.of(context);
       try {
         final ImagePicker picker = ImagePicker();
         final XFile? image = await picker.pickImage(
@@ -332,8 +345,7 @@ class MyClassesPageState extends State<MyClassesPage> {
         if (image == null) return;
 
         File? imageToUse;
-        
-        // Try to crop the image, but if it fails, use the original
+
         try {
           final CroppedFile? croppedFile = await ImageCropper().cropImage(
             sourcePath: image.path,
@@ -356,58 +368,63 @@ class MyClassesPageState extends State<MyClassesPage> {
           if (croppedFile != null) {
             imageToUse = File(croppedFile.path);
           } else {
-            // User cancelled cropping, use original
             imageToUse = File(image.path);
           }
         } catch (cropError) {
-          // Cropper failed, use the original image
           debugPrint('Cropping failed, using original image: $cropError');
           imageToUse = File(image.path);
         }
 
-
-        // Try to compress the image to create a thumbnail
         String? thumbnailData;
         try {
-          final Uint8List? compressed = await FlutterImageCompress.compressWithFile(
-            imageToUse.path,
-            minWidth: 100,
-            minHeight: 100,
-            quality: 50,
-          );
-          
-          if (compressed != null) {
-            thumbnailData = base64Encode(compressed);
-          } else {
-            // Compression returned null, read file directly
-            final bytes = await imageToUse.readAsBytes();
-            thumbnailData = base64Encode(bytes);
+          // Validate image dimensions first
+          final validationError = await ImageCompressionUtils.validateImageDimensions(imageToUse);
+          if (validationError != null) {
+            if (context.mounted) {
+              messenger.showSnackBar(
+                SnackBar(
+                  content: Text(validationError),
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+            }
+            return;
+          }
+
+          // Use smart compression with dimension-based resizing
+          thumbnailData = await ImageCompressionUtils.smartCompressImage(imageToUse);
+          debugPrint('Image compressed successfully. Base64 length: ${thumbnailData.length} chars');
+
+          if (context.mounted) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('✓ Image optimized and ready'),
+                duration: Duration(seconds: 2),
+              ),
+            );
           }
         } catch (compressionError) {
-          // Compression failed, read the file bytes directly
-          debugPrint('Compression failed, using uncompressed image: $compressionError');
-          try {
-            final bytes = await imageToUse.readAsBytes();
-            thumbnailData = base64Encode(bytes);
-          } catch (readError) {
-            debugPrint('Failed to read image bytes: $readError');
-            // Will proceed with null thumbnail
+          debugPrint('Image compression failed: $compressionError');
+          if (context.mounted) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text('Failed to process image: $compressionError'),
+                duration: const Duration(seconds: 3),
+              ),
+            );
           }
+          return;
         }
-        
+
         dialogSetState(() {
           selectedImage = imageToUse;
           imageThumbnail = thumbnailData;
         });
       } catch (e) {
         debugPrint('Error picking image: $e');
-        // ignore: use_build_context_synchronously
-        final messenger = ScaffoldMessenger.of(context);
-        Future.microtask(() {
-          messenger.showSnackBar(
-            SnackBar(content: Text('Failed to pick image: $e')),
-          );
-        });
+        messenger.showSnackBar(
+          SnackBar(content: Text('Failed to pick image: $e')),
+        );
       }
     }
 
@@ -427,7 +444,6 @@ class MyClassesPageState extends State<MyClassesPage> {
                     style: TextStyle(fontSize: 13, color: Colors.black54),
                   ),
                   const SizedBox(height: 24),
-                  // Section Image Picker (Optional)
                   Center(
                     child: Column(
                       children: [
@@ -529,105 +545,127 @@ class MyClassesPageState extends State<MyClassesPage> {
               ),
               ElevatedButton(
                 onPressed: () async {
-                  if (selectedGrade == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Please select a Grade Level')),
-                    );
-                    return;
-                  }
-                  
-                  if (controller.text.trim().isNotEmpty) {
+                  if (isCreating) return;
+                  dialogSetState(() => isCreating = true);
+
+                  try {
+                    if (selectedGrade == null) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please select a Grade Level')),
+                        );
+                      }
+                      return;
+                    }
+
+                    if (controller.text.trim().isEmpty) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please enter a Section Name')),
+                        );
+                      }
+                      return;
+                    }
+
                     final rawName = controller.text.trim().toUpperCase();
                     final gradeNum = selectedGrade!.replaceAll('Grade ', '');
-                    // Auto-format: "11 - AMBER"
-                    final sectionName = "$gradeNum - $rawName"; 
+                    final sectionName = "$gradeNum - $rawName";
 
                     final user = FirebaseAuth.instance.currentUser;
-                    if (user == null) return;
+                    if (user == null) {
+                      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Not signed in')));
+                      return;
+                    }
 
-                    // CHECK: Ensure section name is unique
-                    final sectionDoc = await FirebaseFirestore.instance.collection('sections').doc(sectionName).get();
+                    debugPrint('Create Section: checking existence for $sectionName');
+                    final sectionDoc = await FirebaseFirestore.instance
+                        .collection('sections')
+                        .doc(sectionName)
+                        .get()
+                        .timeout(const Duration(seconds: 8));
+
                     if (sectionDoc.exists) {
-                       if (context.mounted) {
-                          showDialog(
-                            context: context,
-                            builder: (context) => Dialog(
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              child: ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  maxWidth: screenWidth < 600 ? screenWidth * 0.9 : 400,
-                  ),
-                                child: Container(
-                                  padding: const EdgeInsets.all(36),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(28),
-                                    color: Colors.white,
-                                    border: Border.all(color: Colors.amber.shade200, width: 2),
-                                  ),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                       Container(
-                                         padding: const EdgeInsets.all(16),
-                                         decoration: BoxDecoration(
-                                           color: Colors.amber.shade50,
-                                           shape: BoxShape.circle,
-                                         ),
-                                         child: Icon(Icons.error_outline_rounded, size: 48, color: Colors.amber.shade700),
-                                       ),
-                                       const SizedBox(height: 24),
-                                       Text(
-                                         'Name Taken',
-                                         style: TextStyle(
-                                           fontSize: 22, 
-                                           fontWeight: FontWeight.bold,
-                                           color: Colors.amber.shade900,
-                                         ),
-                                       ),
-                                       const SizedBox(height: 16),
-                                       Text(
-                                         'The section name "$sectionName" has already been taken.',
-                                         textAlign: TextAlign.center,
-                                         style: const TextStyle(fontSize: 16, height: 1.5),
-                                       ),
-                                       const SizedBox(height: 8),
-                                       Text(
-                                         'Please choose a different name.',
-                                         textAlign: TextAlign.center,
-                                         style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                                       ),
-                                       const SizedBox(height: 24),
-                                       SizedBox(
-                                         width: double.infinity,
-                                         child: ElevatedButton(
-                                           onPressed: () => Navigator.pop(context),
-                                           style: ElevatedButton.styleFrom(
-                                             backgroundColor: Colors.amber.shade700,
-                                             foregroundColor: Colors.white,
-                                             padding: const EdgeInsets.symmetric(vertical: 12),
-                                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                           ),
-                                           child: const Text('Try Again', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                                         ),
-                                       ),
-                                    ],
-                                  ),
+                      if (context.mounted) {
+                        showDialog(
+                          context: context,
+                          builder: (context) => Dialog(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: screenWidth < 600 ? screenWidth * 0.9 : 400,
+                              ),
+                              child: Container(
+                                padding: const EdgeInsets.all(36),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(28),
+                                  color: Colors.white,
+                                  border: Border.all(color: Colors.amber.shade200, width: 2),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber.shade50,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(Icons.error_outline_rounded, size: 48, color: Colors.amber.shade700),
+                                    ),
+                                    const SizedBox(height: 24),
+                                    Text(
+                                      'Name Taken',
+                                      style: TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.amber.shade900,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'The section name "$sectionName" has already been taken.',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(fontSize: 16, height: 1.5),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Please choose a different name.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                                    ),
+                                    const SizedBox(height: 24),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.amber.shade700,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(vertical: 12),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        ),
+                                        child: const Text('Try Again', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                          );
-                       }
-                       return; // Stop creation
+                          ),
+                        );
+                      }
+                      return;
                     }
 
-                    // Add to local state (for instant feedback, though listener will catch it too)
+
                     setState(() {
                       if (!_sections.contains(sectionName)) _sections.add(sectionName);
                       if (!_ownedSections.contains(sectionName)) _ownedSections.add(sectionName);
                     });
-                    await _saveSections();
-                    
-                    // Set adviserUid, adviserName, studentUids, and optional image in section document
+
+                    debugPrint('Create Section: saving teacher lists');
+                    await _saveSections().timeout(const Duration(seconds: 8));
+
                     final Map<String, dynamic> sectionData = {
                       'adviserUid': user.uid,
                       'adviserName': _teacherName,
@@ -636,19 +674,18 @@ class MyClassesPageState extends State<MyClassesPage> {
                       'teacherUids': [],
                     };
 
-                    // Add image thumbnail if selected
                     if (imageThumbnail != null) {
                       sectionData['sectionImageThumbnail'] = imageThumbnail;
                     }
 
+                    debugPrint('Create Section: writing section document for $sectionName');
                     await FirebaseFirestore.instance.collection('sections').doc(sectionName).set(
                       sectionData,
                       SetOptions(merge: true),
-                    );
+                    ).timeout(const Duration(seconds: 8));
 
                     if (context.mounted) {
                       Navigator.pop(context);
-                      // Auto-navigate to the new section
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -656,6 +693,14 @@ class MyClassesPageState extends State<MyClassesPage> {
                         ),
                       );
                     }
+                  } on TimeoutException catch (e) {
+                    debugPrint('Timeout while creating section: $e');
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Network timeout while creating section. Try again.')));
+                  } catch (e, st) {
+                    debugPrint('Error creating section: $e\n$st');
+                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to create section: $e')));
+                  } finally {
+                    dialogSetState(() => isCreating = false);
                   }
                 },
                 style: ElevatedButton.styleFrom(
@@ -664,7 +709,9 @@ class MyClassesPageState extends State<MyClassesPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                child: const Text('Create Section', style: TextStyle(fontWeight: FontWeight.bold)),
+                child: isCreating
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Create Section', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
           );
@@ -1045,4 +1092,10 @@ class MyClassesPageState extends State<MyClassesPage> {
     );
   }
 }
+
+
+
+
+
+
 

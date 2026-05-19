@@ -122,7 +122,7 @@ class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 hintText: 'Password',
-                prefixIcon: IconButton(
+                suffixIcon: IconButton(
                   icon: Icon(
                     _passwordVisible ? Icons.lock_open : Icons.lock,
                     color: Colors.red,

@@ -350,6 +350,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
     final teacherProfile = _teacherProfiles[teacherUid];
     final String? thumbnail = teacherProfile?['profileImageThumbnail'];
     final String? imageUrl = teacherProfile?['profileImageUrl'];
+    final String displayTeacherName = teacherProfile?['name'] ?? teacher;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -432,7 +433,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
               ),
               const SizedBox(width: 8),
               Text(
-                teacher,
+                displayTeacherName,
                 style: TextStyle(fontSize: 14, color: Colors.grey[700]),
               ),
             ],

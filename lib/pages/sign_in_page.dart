@@ -481,16 +481,14 @@ class _SignInPageState extends State<SignInPage> {
                                   obscureText: !_passwordVisible,
                                   enabled: !_isLoading,
                                   decoration: InputDecoration(
-                                    prefixIcon: GestureDetector(
+                                    suffixIcon: GestureDetector(
                                       onTap: () {
                                         setState(() {
                                           _passwordVisible = !_passwordVisible;
                                         });
                                       },
                                       child: Icon(
-                                        _passwordVisible
-                                            ? Icons.lock_open
-                                            : Icons.lock,
+                                        _passwordVisible ? Icons.lock_open : Icons.lock,
                                         color: HexColor("#116754"),
                                         size: iconSize,
                                       ),

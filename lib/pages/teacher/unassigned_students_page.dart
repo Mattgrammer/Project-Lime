@@ -15,8 +15,9 @@ class UnassignedStudentsPage extends StatefulWidget {
 class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
   List<UnassignedStudent> _allStudents = [];
   List<UnassignedStudent> _filteredStudents = [];
-  final TextEditingController _searchController = TextEditingController();
+  List<String> _availableGradeLevels = [];
   String? _selectedGradeLevel;
+  final TextEditingController _searchController = TextEditingController();
   bool _isLoading = true;
 
   @override
@@ -41,6 +42,7 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
 
       final List<UnassignedStudent> students = [];
 
+      final Set<String> gradeLevels = {};
       for (var doc in studentsSnapshot.docs) {
         final data = doc.data();
         final name = data['name'] as String? ?? 'Unknown';
@@ -50,21 +52,34 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
         final sections = data['sections'] as List<dynamic>?;
 
         if (sections == null || sections.isEmpty) {
-          final String? gVal = data['gradeLevel'] as String?;
-          students.add(UnassignedStudent(
-            uid: uid,
-            name: name,
-            email: data['email'] as String? ?? '',
-            gradeLevel: gVal,
-            profileImageThumbnail: data['profileImageThumbnail'] as String?,
-            profileImageUrl: data['profileImageUrl'] as String?,
-          ));
+            String? gLevel;
+            final gVal = data['gradeLevel'];
+            if (gVal != null) {
+              gLevel = gVal.toString();
+              gradeLevels.add(gLevel);
+            }
+
+            students.add(UnassignedStudent(
+              uid: uid,
+              name: name,
+              email: data['email'] as String? ?? '',
+              profileImageThumbnail: data['profileImageThumbnail'] as String?,
+              profileImageUrl: data['profileImageUrl'] as String?,
+              gradeLevel: gLevel,
+            ));
         }
       }
       
+      final sortedGrades = gradeLevels.toList()..sort((a, b) {
+        final na = int.tryParse(a.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+        final nb = int.tryParse(b.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+        return na.compareTo(nb);
+      });
+
       setState(() {
         _allStudents = students;
         _filteredStudents = students;
+        _availableGradeLevels = sortedGrades;
         _isLoading = false;
       });
     } catch (e) {
@@ -83,8 +98,7 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                              student.name.toLowerCase().contains(query) ||
                              student.email.toLowerCase().contains(query);
         
-        final matchesGrade = _selectedGradeLevel == null || 
-                            student.gradeLevel == _selectedGradeLevel;
+        final matchesGrade = _selectedGradeLevel == null || student.gradeLevel == _selectedGradeLevel;
 
         return matchesSearch && matchesGrade;
       }).toList();
@@ -204,11 +218,11 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                       Row(
                         children: [
                           Expanded(
-                            flex: 3,
+                            flex: 2,
                             child: TextField(
                               controller: _searchController,
                               decoration: InputDecoration(
-                                hintText: 'Search by name or email...',
+                                hintText: 'Search students...',
                                 prefixIcon: const Icon(Icons.search),
                                 border: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
@@ -221,16 +235,15 @@ class _UnassignedStudentsPageState extends State<UnassignedStudentsPage> {
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            flex: 2,
+                            flex: 1,
                             child: LIMEDropdown<String>(
                               label: 'Grade Level',
                               hint: 'All Grades',
                               value: _selectedGradeLevel,
                               compact: true,
-                              items: const [
-                                DropdownMenuItem(value: null, child: Text('All Grades')),
-                                DropdownMenuItem(value: 'Grade 11', child: Text('Grade 11')),
-                                DropdownMenuItem(value: 'Grade 12', child: Text('Grade 12')),
+                              items: [
+                                const DropdownMenuItem(value: null, child: Text('All Grades')),
+                                ..._availableGradeLevels.map((g) => DropdownMenuItem(value: g, child: Text(g.contains('Grade') ? g : 'Grade $g'))),
                               ],
                               onChanged: (val) {
                                 setState(() => _selectedGradeLevel = val);
@@ -365,17 +378,17 @@ class UnassignedStudent {
   final String uid;
   final String name;
   final String email;
-  final String? gradeLevel;
   final String? profileImageThumbnail;
   final String? profileImageUrl;
+  final String? gradeLevel;
 
   UnassignedStudent({
     required this.uid,
     required this.name,
     required this.email,
-    this.gradeLevel,
     this.profileImageThumbnail,
     this.profileImageUrl,
+    this.gradeLevel,
   });
 }
 

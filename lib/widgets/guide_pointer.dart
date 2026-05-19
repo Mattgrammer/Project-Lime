@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'dart:async';
+import '../services/demo_section_service.dart';
 
 class GuideStep {
   final GlobalKey targetKey;
@@ -48,6 +49,12 @@ class GuidePointer extends StatefulWidget {
     int initialStepOffset = 0,
   }) {
     debugPrint('GUIDE: show() called with ${steps.length} steps');
+
+    // Enable demo sections when guide starts
+    DemoSectionService.enableDemoSections().then((_) {
+      debugPrint('GUIDE: Demo sections enabled');
+    });
+
     dismiss();
     
     // Use rootOverlay to ensure the guide is above everything (bottom bars, dialogs, etc.)
@@ -111,6 +118,11 @@ class GuidePointer extends StatefulWidget {
       debugPrint('GUIDE: dismissing current overlay');
       _currentOverlay?.remove();
       _currentOverlay = null;
+
+      // Disable demo sections when guide ends
+      DemoSectionService.disableDemoSections().then((_) {
+        debugPrint('GUIDE: Demo sections disabled');
+      });
     }
   }
 

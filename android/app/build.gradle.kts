@@ -9,8 +9,8 @@ plugins {
 }
 
 android {
-    namespace = "com.example.lime"
-    compileSdk = flutter.compileSdkVersion
+    namespace = "com.mattgrammer.lime"
+    compileSdk = 34
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -30,13 +30,17 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.lime"
+        applicationId = "com.mattgrammer.lime"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        minSdk = 21
+        targetSdk = 34
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86")
+        }
     }
 
     buildTypes {
@@ -49,7 +53,7 @@ android {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation("androidx.appcompat:appcompat:1.6.1")
 }
 

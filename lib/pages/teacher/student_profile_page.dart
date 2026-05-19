@@ -7,6 +7,7 @@ import '../../widgets/guide_pointer.dart';
 import '../../utils/notification_helper.dart';
 import '../../services/fcm_service.dart';
 import 'dart:convert';
+import 'dart:async';
 
 class StudentProfilePage extends StatefulWidget {
   final Student student;
@@ -36,6 +37,7 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
   Map<String, dynamic> _releaseDates = {};
   List<String> _allSubjects = [];
   Map<String, int> _subjectSemesters = {};
+  StreamSubscription? _gradesSub;
 
   @override
   void initState() {
@@ -43,6 +45,13 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
     _grades = widget.student.grades.map((k, v) => MapEntry(k, Map<String, double>.from(v)));
     _loadPermissions();
     _listenToGradeRelease();
+    _listenToGrades();
+  }
+
+  @override
+  void dispose() {
+    _gradesSub?.cancel();
+    super.dispose();
   }
 
   final GlobalKey _dialogInputKey = GlobalKey();
@@ -184,6 +193,37 @@ class _StudentProfilePageState extends State<StudentProfilePage> {
         setState(() => _releaseDates = snap.data()!['releaseDates'] as Map<String, dynamic>? ?? {});
       }
     });
+  }
+
+  void _listenToGrades() {
+    if (widget.sectionName == null || widget.student.uid == null || widget.sectionName == "[TUTORIAL] Demo Class") return;
+    
+    _gradesSub?.cancel();
+    _gradesSub = FirebaseFirestore.instance
+        .collection('sections')
+        .doc(widget.sectionName)
+        .collection('studentGrades')
+        .doc(widget.student.uid)
+        .snapshots()
+        .listen((snap) {
+          if (snap.exists && mounted) {
+            final data = snap.data();
+            final rawGrades = data?['grades'] as Map?;
+            if (rawGrades != null) {
+              final Map<String, Map<String, double>> parsedGrades = {};
+              rawGrades.forEach((sub, qMap) {
+                if (qMap is Map) {
+                  parsedGrades[sub.toString()] = qMap.map(
+                    (k, v) => MapEntry(k.toString(), (v as num?)?.toDouble() ?? 0.0)
+                  );
+                }
+              });
+              setState(() {
+                _grades = parsedGrades;
+              });
+            }
+          }
+        });
   }
 
   bool _isLocked(String q) {

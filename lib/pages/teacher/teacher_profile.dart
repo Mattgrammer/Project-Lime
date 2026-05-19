@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -27,6 +28,7 @@ import '../common/help_page.dart';
 import '../../utils/notification_helper.dart';
 import '../../widgets/guide_pointer.dart';
 import '../../widgets/change_password_dialog.dart';
+import 'package:lime/pages/auth/pin_setup_page.dart';
 
 class ProfileTeacherPage extends StatefulWidget {
   const ProfileTeacherPage({super.key});
@@ -450,7 +452,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   Future<String?> _generateThumbnail(File file) async {
     try {
       // Desktop (Windows/Linux/Mac): Read bytes directly since compression plugin is mobile-only
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         final bytes = await file.readAsBytes();
         // Limit to ~500KB to avoid Firestore document limit (1MB)
         if (bytes.length > 500 * 1024) {
@@ -562,7 +564,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   // ================= IMAGE PICKER (DESKTOP + MOBILE) =================
   Future<File?> _pickImage() async {
     File? selectedFile;
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       final result = await FilePicker.platform.pickFiles(type: FileType.image);
       if (result != null && result.files.single.path != null) {
         selectedFile = File(result.files.single.path!);
@@ -579,7 +581,7 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
       if (!mounted) return null;
 
       // Skip cropping on Desktop (not fully supported by plugin)
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         return selectedFile;
       }
       
@@ -713,7 +715,35 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
     );
   }
 
-  // ================= LOGOUT =================
+  // ================= SIGN OUT (with confirmation) =================
+  Future<void> _confirmSignOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign Out?'),
+        content: const Text(
+          'You will need to enter your email and password again to sign back in.\n\n'
+          'Tip: Just close the app instead! Your PIN will protect it when you reopen.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text('Sign Out', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await _logout();
+    }
+  }
+
   Future<void> _logout() async {
     await _auth.signOut();
     if (!mounted) return;
@@ -1113,9 +1143,14 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                   onTap: _changePassword,
                 ),
                 _buildFacebookListTile(
+                  icon: Icons.security,
+                  title: 'Set / Update PIN',
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PinSetupPage())),
+                ),
+                _buildFacebookListTile(
                   icon: Icons.logout,
-                  title: 'Logout',
-                  onTap: _logout,
+                  title: 'Sign Out',
+                  onTap: _confirmSignOut,
                 ),
                 _buildFacebookListTile(
                   icon: Icons.delete_forever,
@@ -1182,49 +1217,45 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
   Widget _buildSidebarContent(BuildContext context) {
     return Column(
       children: [
-        InkWell(
-          onTap: () => _onItemTapped(4),
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
-            child: Column(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.black, width: 2.0),
-                  ),
-                  child: CircleAvatar(
-                    radius: 38,
-                    backgroundColor: Colors.white,
-                    backgroundImage: _thumbnailBytes != null 
-                        ? MemoryImage(_thumbnailBytes!)
-                        : (_profileImageUrl != null 
-                            ? NetworkImage(_profileImageUrl!) 
-                            : (_profileImage != null && _profileImage!.existsSync() 
-                                ? FileImage(_profileImage!) 
-                                : null)) as ImageProvider?,
-                    child: (_profileImageUrl == null && _profileImageThumbnail == null && (_profileImage == null || !_profileImage!.existsSync()))
-                        ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
-                        : null,
-                  ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 20),
+          child: Column(
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black, width: 2.0),
                 ),
-                const SizedBox(height: 14),
-                Text(
-                  _nameController.text.isNotEmpty ? _nameController.text : 'Teacher',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold),
+                child: CircleAvatar(
+                  radius: 38,
+                  backgroundColor: Colors.white,
+                  backgroundImage: _thumbnailBytes != null 
+                      ? MemoryImage(_thumbnailBytes!)
+                      : (_profileImageUrl != null 
+                          ? NetworkImage(_profileImageUrl!) 
+                          : (_profileImage != null && _profileImage!.existsSync() 
+                              ? FileImage(_profileImage!) 
+                              : null)) as ImageProvider?,
+                  child: (_profileImageUrl == null && _profileImageThumbnail == null && (_profileImage == null || !_profileImage!.existsSync()))
+                      ? Icon(Icons.person, size: 40, color: HexColor("#116754"))
+                      : null,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  _selectedTeacherType ?? '',
-                  style: TextStyle(color: Colors.white.withValues(alpha: 0.8)),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                _nameController.text.isNotEmpty ? _nameController.text : 'Teacher',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _selectedTeacherType ?? '',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.8)),
+              ),
+            ],
           ),
         ),
         const Divider(color: Colors.white24),
@@ -1250,16 +1281,17 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
 
   Widget _menuItem(BuildContext context, IconData icon, String label, int index,
       {VoidCallback? onTap, Widget? trailing, Key? key}) {
+    final isSelected = _selectedIndex == index;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       child: ListTile(
         key: key,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        leading: Icon(icon, color: Colors.white),
-        title: Text(label, style: const TextStyle(color: Colors.white)),
+        leading: Icon(icon, color: isSelected ? Colors.yellow : Colors.white),
+        title: Text(label, style: TextStyle(color: isSelected ? Colors.yellow : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
         trailing: trailing,
-        selected: _selectedIndex == index,
-        selectedTileColor: Colors.white.withValues(alpha: 0.2),
+        selected: isSelected,
+        selectedTileColor: Colors.yellow.withValues(alpha: 0.15),
         onTap: onTap ?? () {
           setState(() => _selectedIndex = index);
         },
@@ -1465,20 +1497,20 @@ class _ProfileTeacherPageState extends State<ProfileTeacherPage> {
                   data: NavigationBarThemeData(
                     labelTextStyle: WidgetStateProperty.resolveWith((states) {
                       if (states.contains(WidgetState.selected)) {
-                        return const TextStyle(color: Colors.white, fontWeight: FontWeight.bold);
+                        return const TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold);
                       }
                       return const TextStyle(color: Colors.white70);
                     }),
                     iconTheme: WidgetStateProperty.resolveWith((states) {
                       if (states.contains(WidgetState.selected)) {
-                        return const IconThemeData(color: Colors.white);
+                        return const IconThemeData(color: Colors.yellow);
                       }
                       return const IconThemeData(color: Colors.white70);
                     }),
                   ),
                   child: NavigationBar(
                     backgroundColor: HexColor("#116754"),
-                    indicatorColor: Colors.white.withValues(alpha: 0.1),
+                    indicatorColor: Colors.yellow.withValues(alpha: 0.15),
                     selectedIndex: _selectedIndex == 5 ? 4 : (_selectedIndex == 4 ? 2 : _selectedIndex), // Map Profile(5) to 4, Inbox(4) to Home(2) or keep selected? 
                     onDestinationSelected: (index) {
                       if (index == 4) {

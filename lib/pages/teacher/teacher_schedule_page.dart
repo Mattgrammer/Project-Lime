@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:async';
 import '../../widgets/guide_pointer.dart';
+import '../../widgets/schedule_tour.dart';
 
 class TeacherSchedulePage extends StatefulWidget {
   final bool startScheduleTour;
@@ -23,6 +24,9 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
   final List<String> _days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'TBA'];
   final GlobalKey _titleKey = GlobalKey();
   final GlobalKey _firstCardKey = GlobalKey();
+  final GlobalKey _semesterSwitcherKey = GlobalKey();
+  final GlobalKey _dayStripKey = GlobalKey();
+  final GlobalKey _emptyStateKey = GlobalKey();
 
   StreamSubscription? _sectionsSub;
 
@@ -113,7 +117,6 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
   }
 
   void _loadDemoSchedule() {
-    // ... (rest of the demo schedule logic remains same)
     // Demo schedule data for tour
     setState(() {
       _isDemoMode = true;
@@ -126,6 +129,13 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
         {'section': 'Grade 10 - B', 'subject': 'Math', 'day': 'Friday', 'time': '9:00 AM - 10:00 AM', 'semester': 1},
         {'section': 'Grade 11 - STEM', 'subject': 'Physics', 'day': 'Friday', 'time': '1:00 PM - 3:00 PM', 'semester': 2},
       ];
+
+      // If the currently selected day has no demo items, switch to the first demo day
+      final hasSelectedDay = _mySchedule.any((e) => (e['day']?.toString() ?? '') == _selectedDay);
+      if (!hasSelectedDay && _mySchedule.isNotEmpty) {
+        _selectedDay = _mySchedule.first['day']?.toString() ?? _selectedDay;
+      }
+
       _isLoading = false;
     });
   }
@@ -136,21 +146,10 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
     
     // Slight delay to allow UI to rebuild with demo data before showing guide
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      GuidePointer.show(
+      // Use the ScheduleTour helper so the seen-flag is persisted and steps are built consistently
+      ScheduleTour.startForced(
         context,
-        steps: [
-          GuideStep(
-            targetKey: _firstCardKey,
-            title: "Class Details",
-            content: "Each card shows the subject name, assigned section, and specific day/time slots for that class.",
-          ),
-          GuideStep(
-            targetKey: _firstCardKey,
-            title: "Schedules & Management",
-            content: "Schedules are tracked per semester. Tip: These are managed by Section Advisers. If any info is incorrect, please contact the adviser of that section.",
-            buttonLabel: "Finish Tour",
-          ),
-        ],
+        keys: [_titleKey, _semesterSwitcherKey, _dayStripKey, _firstCardKey, _emptyStateKey],
         onComplete: () {},
       );
     });
@@ -346,7 +345,7 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Daily Agenda',
+                            'Class Schedule',
                             key: _titleKey,
                             style: TextStyle(
                               fontSize: 38,
@@ -358,26 +357,28 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
                           Text(
                             'Focus on your current classes',
                             style: TextStyle(
-                              fontSize: 16,
-                              color: HexColor("#111111").withValues(alpha: 0.5), 
-                              fontWeight: FontWeight.w600,
+                              fontSize: 20,
+                              color: HexColor("#111111"), 
+                              fontWeight: FontWeight.w800,
                             ),
                           ),
                         ],
                       ),
                     ),
-                    _buildSemesterSwitcher(),
+                    // attach key to semester switcher so tour can highlight it
+                    Container(key: _semesterSwitcherKey, child: _buildSemesterSwitcher()),
                   ],
                 ),
               ),
               
-              _buildDayStrip(),
+              // attach key to day strip wrapper
+              Container(key: _dayStripKey, child: _buildDayStrip()),
 
               const SizedBox(height: 10),
 
               Expanded(
                 child: scheduleItems.isEmpty
-                    ? _buildEmptyState()
+                    ? Container(key: _emptyStateKey, child: _buildEmptyState())
                     : SingleChildScrollView(
                         physics: const BouncingScrollPhysics(),
                         padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -397,8 +398,8 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
     int i = 0;
     while (i < items.length) {
       if (i == 0) {
-        // First item is always a Large Wide Card
-        rows.add(_buildModernBentoCard(items[i], BentoSize.wide));
+        // First item is always a Large Wide Card (attach key to first card)
+        rows.add(_buildModernBentoCard(items[i], BentoSize.wide, key: _firstCardKey));
         i++;
       } else if (i + 1 < items.length && i % 2 != 0) {
         // Pair up next two as regular cards
@@ -565,7 +566,8 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
     );
   }
 
-  Widget _buildModernBentoCard(Map<String, dynamic> data, BentoSize size) {
+  // Allow callers to pass an optional key so the tour can target the widget
+  Widget _buildModernBentoCard(Map<String, dynamic> data, BentoSize size, {Key? key}) {
     final title = data['subject'] ?? 'Untitled';
     final section = data['section'] ?? 'Unknown Section';
     final timeStr = data['time'] ?? 'TBA';
@@ -578,6 +580,7 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
     final double cardHeight = isWide ? 140 : 180;
 
     return Container(
+      key: key,
       height: cardHeight,
       margin: const EdgeInsets.only(bottom: 4),
       decoration: BoxDecoration(
@@ -645,7 +648,7 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
             children: [
               Text(
                 time.toUpperCase(),
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: HexColor("#111111").withValues(alpha: 0.4), letterSpacing: 1),
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: HexColor("#111111"), letterSpacing: 1),
               ),
               const SizedBox(height: 6),
               Text(
@@ -656,7 +659,7 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
               ),
               Text(
                 section,
-                style: TextStyle(fontSize: 14, color: HexColor("#111111").withValues(alpha: 0.5), fontWeight: FontWeight.w600),
+                style: TextStyle(fontSize: 14, color: HexColor("#111111"), fontWeight: FontWeight.w600),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -666,10 +669,10 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.03),
+            color: Colors.black.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Text("S$sem", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: HexColor("#111111").withValues(alpha: 0.3))),
+          child: Text("S$sem", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: HexColor("#111111"))),
         ),
       ],
     );
@@ -691,13 +694,13 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
               ),
               child: Icon(icon, color: color.withValues(alpha: 0.7), size: 24),
             ),
-            Text("S$sem", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: Colors.grey[200])),
+            Text("S$sem", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: HexColor("#111111"))),
           ],
         ),
         const Spacer(),
         Text(
           time,
-          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: HexColor("#111111").withValues(alpha: 0.4)),
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: HexColor("#111111")),
         ),
         const SizedBox(height: 4),
         Text(
@@ -709,7 +712,7 @@ class TeacherSchedulePageState extends State<TeacherSchedulePage> {
         const SizedBox(height: 4),
         Text(
           section,
-          style: TextStyle(fontSize: 12, color: HexColor("#111111").withValues(alpha: 0.6), fontWeight: FontWeight.w600),
+          style: TextStyle(fontSize: 12, color: HexColor("#111111"), fontWeight: FontWeight.w600),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),

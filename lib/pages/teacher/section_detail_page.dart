@@ -10,6 +10,7 @@ import '../../widgets/time_range_selector.dart';
 import '../../widgets/guide_pointer.dart';
 import '../../services/fcm_service.dart';
 import '../../constants/demo_images.dart';
+import '../../utils/image_compression_utils.dart';
 
 import 'dart:io';
 import 'dart:async';
@@ -17,7 +18,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 class SectionDetailPage extends StatefulWidget {
   final String sectionName;
@@ -50,7 +50,9 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
   StreamSubscription? _studentsSubscription;
   StreamSubscription? _sectionSubscription;
   StreamSubscription? _teachersSubscription;
+  StreamSubscription? _gradesSubscription;
   Map<String, Map<String, dynamic>> _teacherProfiles = {};
+  Map<String, Map<String, Map<String, double>>> _studentGradesMap = {}; // uid -> {subject: {quarter: grade}}
 
   // Section Profile Picture State
   String? _sectionImageUrl;
@@ -115,6 +117,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       });
     } else {
       _listenToStudents();
+      _listenToGrades();
       _listenToSection();
     }
   }
@@ -172,6 +175,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     _studentsSubscription?.cancel();
     _sectionSubscription?.cancel();
     _teachersSubscription?.cancel();
+    _gradesSubscription?.cancel();
     super.dispose();
   }
 
@@ -189,6 +193,11 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
       final List<Student> loadedStudents = snapshot.docs.map((doc) {
         final data = doc.data();
         data['uid'] = doc.id;
+        
+        // Merge grades from our separate grades map
+        final grades = _studentGradesMap[doc.id] ?? {};
+        data['grades'] = grades;
+        
         return Student.fromJson(data);
       }).toList();
 
@@ -199,6 +208,55 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
     }, onError: (e) {
       debugPrint('Error listening to students: $e');
       if (mounted) setState(() => _isLoading = false);
+    });
+  }
+
+  void _listenToGrades() {
+    final firestore = FirebaseFirestore.instance;
+    _gradesSubscription?.cancel();
+    
+    _gradesSubscription = firestore
+        .collection('sections')
+        .doc(widget.sectionName)
+        .collection('studentGrades')
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+      
+      final Map<String, Map<String, Map<String, double>>> allGrades = {};
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        final rawGrades = data['grades'] as Map?;
+        if (rawGrades != null) {
+          final Map<String, Map<String, double>> studentGrades = {};
+          rawGrades.forEach((subject, qMap) {
+            if (qMap is Map) {
+              studentGrades[subject.toString()] = qMap.map(
+                (k, v) => MapEntry(k.toString(), (v as num?)?.toDouble() ?? 0.0)
+              );
+            }
+          });
+          allGrades[doc.id] = studentGrades;
+        }
+      }
+      
+      setState(() {
+        _studentGradesMap = allGrades;
+        // Update existing students with new grades
+        _students = _students.map((s) {
+          if (s.uid != null && allGrades.containsKey(s.uid)) {
+            return Student(
+              name: s.name,
+              studentId: s.studentId,
+              grades: allGrades[s.uid!]!,
+              uid: s.uid,
+              profileImageThumbnail: s.profileImageThumbnail,
+              profileImageUrl: s.profileImageUrl,
+            );
+          }
+          return s;
+        }).toList();
+      });
     });
   }
 
@@ -319,26 +377,11 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
 
   Future<String> _generateSectionThumbnail(File imageFile) async {
     try {
-      final Uint8List? result = await FlutterImageCompress.compressWithFile(
-        imageFile.absolute.path,
-        minWidth: 100,
-        minHeight: 100,
-        quality: 50,
-      );
-      if (result != null) {
-        return base64Encode(result);
-      }
+      // Use the improved smart compression utility
+      return await ImageCompressionUtils.smartCompressImage(imageFile);
     } catch (e) {
-      debugPrint('Compression failed: $e');
-    }
-
-    // Fallback: read file directly
-    try {
-      final bytes = await imageFile.readAsBytes();
-      return base64Encode(bytes);
-    } catch (e) {
-      debugPrint('Error reading file bytes: $e');
-      return '';
+      debugPrint('Error generating section thumbnail: $e');
+      rethrow;
     }
   }
 
@@ -371,14 +414,20 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
           _sectionThumbnailBytes = base64Decode(thumbnail);
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Section image updated successfully')),
+          const SnackBar(
+            content: Text('✓ Section image updated successfully'),
+            duration: Duration(seconds: 2),
+          ),
         );
       }
     } catch (e) {
       debugPrint('Error saving section image: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to update section image')),
+          SnackBar(
+            content: Text('Failed to update section image: $e'),
+            duration: const Duration(seconds: 3),
+          ),
         );
       }
     } finally {
@@ -477,19 +526,32 @@ class _SectionDetailPageState extends State<SectionDetailPage> with SingleTicker
 
     try {
       final firestore = FirebaseFirestore.instance;
+      // Grades are now stored in the sections collection
+      final gradeRef = firestore
+          .collection('sections')
+          .doc(widget.sectionName)
+          .collection('studentGrades')
+          .doc(studentUid);
+
       if (grade == null) {
-        // Delete the quarter grade
-        await firestore.collection('students').doc(studentUid).update({
-          'grades.$subject.$quarter': FieldValue.delete(),
-        });
+        await gradeRef.set({
+          'grades': {
+            subject: {
+              quarter: FieldValue.delete(),
+            }
+          }
+        }, SetOptions(merge: true));
       } else {
-        // Atomic update of a specific quarter grade
-        await firestore.collection('students').doc(studentUid).update({
-          'grades.$subject.$quarter': grade,
-        });
+        await gradeRef.set({
+          'grades': {
+            subject: {
+              quarter: grade,
+            }
+          }
+        }, SetOptions(merge: true));
       }
     } catch (e) {
-      debugPrint('Error saving student grade to Firestore: $e');
+      debugPrint('Error saving student grade to sections collection: $e');
     }
   }
 

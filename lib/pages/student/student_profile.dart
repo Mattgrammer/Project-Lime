@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -28,6 +29,7 @@ import '../common/help_page.dart';
 import '../../utils/notification_helper.dart';
 import '../../widgets/change_password_dialog.dart';
 import '../../widgets/guide_pointer.dart';
+import 'package:lime/pages/auth/pin_setup_page.dart';
 
 class ProfileStudentPage extends StatefulWidget {
   const ProfileStudentPage({super.key});
@@ -183,7 +185,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
             _nameController.text = name;
             _selectedUserType = data['userType'] as String?;
             _selectedTeacherType = data['teacherType'] as String?;
-            _selectedGradeLevel = data['gradeLevel'] as String?;
+            // _selectedGradeLevel is derived from sections in _updateSectionsSubscription
             _detailsSubmitted = data['detailsSubmitted'] as bool? ?? false;
             _assignedSections = sectionsList;
             _profileImageUrl = data['profileImageUrl'] as String?;
@@ -237,7 +239,15 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
         .snapshots()
         .listen((snap) {
           if (mounted) {
-            setState(() => _sectionsSnapshot = snap);
+            String? derivedGrade;
+            if (snap.docs.isNotEmpty) {
+              // Extract gradeLevel from the first assigned section
+              derivedGrade = snap.docs.first.data()['gradeLevel'] as String?;
+            }
+            setState(() {
+              _sectionsSnapshot = snap;
+              _selectedGradeLevel = derivedGrade;
+            });
           }
         });
   }
@@ -321,7 +331,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
   Future<String?> _generateThumbnail(File file) async {
     try {
       // Desktop (Windows/Linux/Mac): Read bytes directly since compression plugin is mobile-only
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         final bytes = await file.readAsBytes();
         // Limit to ~500KB to avoid Firestore document limit (1MB)
         if (bytes.length > 500 * 1024) {
@@ -360,9 +370,6 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
         
         if (_selectedTeacherType != null) {
           dataToSave['teacherType'] = _selectedTeacherType;
-        }
-        if (_selectedGradeLevel != null) {
-          dataToSave['gradeLevel'] = _selectedGradeLevel;
         }
       
         if (_profileImage != null) {
@@ -403,7 +410,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
   // ================= IMAGE PICKER (DESKTOP + MOBILE) =================
   Future<File?> _pickImage() async {
     File? selectedFile;
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       final result = await FilePicker.platform.pickFiles(type: FileType.image);
       if (result != null && result.files.single.path != null) {
         selectedFile = File(result.files.single.path!);
@@ -420,7 +427,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
       if (!mounted) return null;
       
       // Skip cropping on Desktop (not fully supported by plugin)
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         return selectedFile;
       }
 
@@ -511,7 +518,35 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
     );
   }
 
-  // ================= LOGOUT (CLEAR DATA) =================
+  // ================= SIGN OUT (with confirmation) =================
+  Future<void> _confirmSignOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign Out?'),
+        content: const Text(
+          'You will need to enter your email and password again to sign back in.\n\n'
+          'Tip: Just close the app instead! Your PIN will protect it when you reopen.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text('Sign Out', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await _logout();
+    }
+  }
+
   Future<void> _logout() async {
     await _auth.signOut();
     if (!mounted) return;
@@ -528,7 +563,6 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
 
   void _showEditProfileSheet() {
     final TextEditingController nameEditController = TextEditingController(text: _nameController.text);
-    String? tempGrade = _selectedGradeLevel;
     File? tempProfileImage = _profileImage; // Temporary holding for image
 
     showDialog(
@@ -608,14 +642,9 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      _DownwardDropdownField(
-                        label: 'Grade Level',
-                        value: tempGrade,
-                        items: gradeLevels,
-                        arrowColor: HexColor("#116754"),
-                        onChanged: (v) => setSheetState(() => tempGrade = v),
-                      ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
+                      // Grade Level is derived from section, removed manual selection
+                      const SizedBox(height: 8),
                       Row(
                         children: [
                           Expanded(
@@ -634,7 +663,6 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                                 if (nameEditController.text.trim().isEmpty) return;
                                 setState(() {
                                   _nameController.text = nameEditController.text.trim();
-                                  _selectedGradeLevel = tempGrade;
                                   _profileImage = tempProfileImage;
 
                                   // NEW: Instant local thumbnail preview for global syncing
@@ -856,9 +884,14 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                   onTap: _changePassword,
                 ),
                 _buildFacebookListTile(
+                  icon: Icons.security,
+                  title: 'Set / Update PIN',
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PinSetupPage())),
+                ),
+                _buildFacebookListTile(
                   icon: Icons.logout,
-                  title: 'Logout',
-                  onTap: _logout,
+                  title: 'Sign Out',
+                  onTap: _confirmSignOut,
                 ),
                 _buildFacebookListTile(
                   icon: Icons.delete_forever,
@@ -1091,13 +1124,9 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                             onChanged: (v) => setState(() => _selectedTeacherType = v),
                           ),
                         if (_selectedUserType == 'Teacher') const SizedBox(height: 16),
-                        if (_selectedUserType == 'Student')
-                          _buildDropdown(
-                            label: 'Grade Level',
-                            value: _selectedGradeLevel,
-                            items: gradeLevels,
-                            onChanged: (v) => setState(() => _selectedGradeLevel = v),
-                          ),
+                        const SizedBox(height: 16),
+                        // Grade Level dropdown removed - derived from assigned section
+                        const SizedBox(height: 8),
                         const SizedBox(height: 24),
                         SizedBox(
                           width: double.infinity,
@@ -1155,6 +1184,7 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
           body: isMobile
               ? _buildContent(_selectedIndex)
               : Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
                       width: isDesktop ? 280 : 240,
@@ -1175,20 +1205,20 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
                   data: NavigationBarThemeData(
                     labelTextStyle: WidgetStateProperty.resolveWith((states) {
                       if (states.contains(WidgetState.selected)) {
-                        return const TextStyle(color: Colors.white, fontWeight: FontWeight.bold);
+                        return const TextStyle(color: Colors.yellow, fontWeight: FontWeight.bold);
                       }
                       return const TextStyle(color: Colors.white70);
                     }),
                     iconTheme: WidgetStateProperty.resolveWith((states) {
                       if (states.contains(WidgetState.selected)) {
-                        return const IconThemeData(color: Colors.white);
+                        return const IconThemeData(color: Colors.yellow);
                       }
                       return const IconThemeData(color: Colors.white70);
                     }),
                   ),
                   child: NavigationBar(
                     backgroundColor: HexColor("#116754"),
-                    indicatorColor: Colors.white.withValues(alpha: 0.1),
+                    indicatorColor: Colors.yellow.withValues(alpha: 0.15),
                     selectedIndex: _selectedIndex == 5 ? 4 : (_selectedIndex == 4 ? 2 : _selectedIndex),
                     onDestinationSelected: (index) {
                       setState(() {
@@ -1216,15 +1246,16 @@ class _ProfileStudentPageState extends State<ProfileStudentPage> {
   }
 
   Widget _menuItem(BuildContext context, IconData icon, String label, int index, {VoidCallback? onTap, GlobalKey? key}) {
+    final isSelected = _selectedIndex == index;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       child: ListTile(
         key: key,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        leading: Icon(icon, color: Colors.white),
-        title: Text(label, style: const TextStyle(color: Colors.white)),
-        selected: _selectedIndex == index,
-        selectedTileColor: Colors.white.withValues(alpha: 0.2),
+        leading: Icon(icon, color: isSelected ? Colors.yellow : Colors.white),
+        title: Text(label, style: TextStyle(color: isSelected ? Colors.yellow : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+        selected: isSelected,
+        selectedTileColor: Colors.yellow.withValues(alpha: 0.15),
         onTap: onTap ?? () {
           setState(() {
             _selectedIndex = index;

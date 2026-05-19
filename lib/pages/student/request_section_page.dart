@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import '../../services/fcm_service.dart';
@@ -24,11 +25,13 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
   final Map<String, String> _sectionOwners = {};
 
   bool _isLoading = true;
+  bool _showDemoSections = false;
   StreamSubscription? _studentSubscription;
 
   @override
   void initState() {
     super.initState();
+    _loadDemoSectionsFlag();
     _loadData(); // Initial load for sections list
     _listenToStudentData(); // Real-time listener for requests/assignments
     _searchController.addListener(_filterSections);
@@ -58,12 +61,12 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
         .snapshots()
         .listen((doc) {
       if (!mounted || !doc.exists) return;
-      
+
       final data = doc.data()!;
-      
+
       // Sync Pending Requests from Cloud
       final cloudPending = List<String>.from(data['pendingRequests'] ?? []);
-      
+
       // Sync Assigned Sections from Cloud
       final cloudAssigned = List<String>.from(data['sections'] ?? []);
 
@@ -74,10 +77,14 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
     });
   }
 
-
-  // (Debug sync removed per user request)
-
-
+  Future<void> _loadDemoSectionsFlag() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _showDemoSections = prefs.getBool('show_demo_sections') ?? false;
+      });
+    }
+  }
 
   Future<void> _loadData() async {
     try {
@@ -96,8 +103,12 @@ class _RequestSectionPageState extends State<RequestSectionPage> {
       for (var doc in sectionsSnapshot.docs) {
         final sectionName = doc.id;
         
-        // Skip tutorial/demo sections
-        if (sectionName.contains('[TUTORIAL]')) continue;
+        // Skip demo sections unless explicitly showing them
+        if (sectionName.contains('[TUTORIAL]') || sectionName.contains('Demo Section')) {
+          if (!_showDemoSections) {
+            continue;
+          }
+        }
 
         final data = doc.data();
         sections.add(sectionName);

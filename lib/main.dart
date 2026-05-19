@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
@@ -22,44 +23,59 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:lime/services/fcm_service.dart';
+import 'package:lime/utils/logger.dart';
 
 
 bool _isFirebaseReady = false;
 
 void main() async {
+  // Initialize logger first
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppLogger.init();
+  await AppLogger.log('App starting...');
+
   // Set up global error handlers to prevent red screens
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
-    debugPrint('Flutter Error: ${details.exception}');
-    debugPrint('Stack trace: ${details.stack}');
-    // Don't show red screen - just log it
+    AppLogger.logError('Flutter Error: ${details.exception}', details.stack);
   };
 
   // Handle async errors
   PlatformDispatcher.instance.onError = (error, stack) {
-    debugPrint('Platform Error: $error');
-    debugPrint('Stack trace: $stack');
+    AppLogger.logError('Platform Error: $error', stack);
     return true; // Mark as handled
   };
 
   try {
-    WidgetsFlutterBinding.ensureInitialized();
+    await AppLogger.log('Checking for Safe Mode...');
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Check if the app crashed last time
+    bool didCrash = prefs.getBool('app_crashed') ?? false;
+    if (didCrash) {
+      await AppLogger.log('DANGER: Previous crash detected. Activating Safe Mode safeguards.');
+    }
+    
+    // Mark app as "running" - we'll clear this if it reaches the first screen successfully
+    await prefs.setBool('app_crashed', true);
+
+    await AppLogger.log('Initializing UI...');
     
     // Enable Immersive Sticky Mode (Auto-hides system UI)
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
     // Initialize Firebase with timeout protection
     try {
-      // Use a longer timeout on Windows/Desktop, but let it be more natural on mobile
+      await AppLogger.log('Initializing Firebase...');
       final initFuture = Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
       );
       
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
         await initFuture.timeout(
           const Duration(seconds: 20),
           onTimeout: () {
-            debugPrint('Firebase initialization timed out');
+            AppLogger.log('Firebase initialization timed out');
             throw Exception('Firebase initialization timed out');
           },
         );
@@ -68,14 +84,16 @@ void main() async {
         await initFuture;
       }
 
+      await AppLogger.log('Firebase initialized successfully');
       _isFirebaseReady = true;
 
       // Explicitly configure Firestore settings
+      await AppLogger.log('Configuring Firestore persistence...');
       FirebaseFirestore.instance.settings = const Settings(
         persistenceEnabled: true,
         cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
       );
-      debugPrint('Firestore initialized - persistence enabled (Unlimited Cache)');
+      await AppLogger.log('Firestore initialized - persistence enabled');
       
       // Initialize FCM
       try {
@@ -90,37 +108,34 @@ void main() async {
     }
 
     // Initialize connectivity and sync services
-    // Wrap in try-catch to prevent app crash if services fail
     try {
+      await AppLogger.log('Initializing ConnectivityService...');
       await ConnectivityService().init().timeout(
         const Duration(seconds: 10),
         onTimeout: () {
-          debugPrint('ConnectivityService initialization timed out');
+          AppLogger.log('ConnectivityService initialization timed out');
         },
       );
     } catch (e, stackTrace) {
-      debugPrint('Error initializing ConnectivityService: $e');
-      debugPrint('Stack trace: $stackTrace');
-      // Non-fatal, continue - app will work without connectivity monitoring
+      await AppLogger.logError('Error initializing ConnectivityService: $e', stackTrace);
     }
 
     if (_isFirebaseReady) {
       try {
+        await AppLogger.log('Initializing OfflineSyncService...');
         await OfflineSyncService().init().timeout(
           const Duration(seconds: 10),
           onTimeout: () {
-            debugPrint('OfflineSyncService initialization timed out');
+            AppLogger.log('OfflineSyncService initialization timed out');
           },
         );
-        debugPrint('Connectivity and sync services initialized');
       } catch (e, stackTrace) {
-        debugPrint('Error initializing OfflineSyncService: $e');
-        debugPrint('Stack trace: $stackTrace');
+        await AppLogger.logError('Error initializing OfflineSyncService: $e', stackTrace);
       }
     }
 
     // Initialize Notifications - Only on mobile platforms
-    if (!Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
+    if (!kIsWeb && !Platform.isWindows && !Platform.isLinux && !Platform.isMacOS) {
       try {
         await NotificationService.init();
       } catch (e) {
@@ -129,7 +144,7 @@ void main() async {
       }
     }
 
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       try {
         await windowManager.ensureInitialized();
 
@@ -278,19 +293,30 @@ class AuthWrapper extends StatefulWidget {
 class _AuthWrapperState extends State<AuthWrapper> {
   bool _isOnboarded = false;
   bool _isCheckingOnboarded = true;
+  StreamSubscription? _updateSubscription;
 
   @override
   void initState() {
     super.initState();
     _checkOnboardingStatus();
-    // Check for updates after the first frame
+    // Start real-time update listener
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      UpdateChecker.checkForUpdates(context);
+      _updateSubscription = UpdateChecker.listenForUpdates(context);
     });
+  }
+
+  @override
+  void dispose() {
+    _updateSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _checkOnboardingStatus() async {
     final prefs = await SharedPreferences.getInstance();
+    // Successfully reached this point, so it didn't crash during init
+    await prefs.setBool('app_crashed', false);
+    await AppLogger.log('App reached UI - clearing crash flag');
+    
     if (mounted) {
       setState(() {
         _isOnboarded = prefs.getBool('is_onboarded') ?? false;

@@ -78,17 +78,12 @@ class OfflineSyncService {
       }
 
       // Force Firestore to sync pending writes
-      // Firestore automatically syncs when online, but we can trigger a check
       try {
-        await _firestore.enableNetwork().timeout(
-          const Duration(seconds: 5),
-          onTimeout: () {
-            debugPrint('OfflineSyncService: enableNetwork timed out');
-          },
-        );
+        debugPrint('OfflineSyncService: Forcing enableNetwork()...');
+        await _firestore.enableNetwork();
+        debugPrint('OfflineSyncService: Network enabled successfully');
       } catch (e) {
         debugPrint('OfflineSyncService: Error enabling network: $e');
-        // Continue anyway - Firestore will sync automatically
       }
       
       // Wait for sync to complete

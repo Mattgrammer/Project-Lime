@@ -30,6 +30,10 @@ class _GradesPageState extends State<GradesPage> {
   double _gpaSem2 = 0.0;
   bool _isLoading = true;
   Map<String, dynamic> _releaseDates = {};
+  
+  // sectionID -> {subject -> {quarter -> grade}}
+  final Map<String, Map<String, Map<String, double>>> _sectionGradesData = {};
+  final Map<String, StreamSubscription> _sectionGradesSubs = {};
 
   @override
   void initState() {
@@ -87,6 +91,9 @@ class _GradesPageState extends State<GradesPage> {
   void dispose() {
     _gradesSub?.cancel();
     _sectionsSub?.cancel();
+    for (var sub in _sectionGradesSubs.values) {
+      sub.cancel();
+    }
     super.dispose();
   }
 
@@ -106,38 +113,27 @@ class _GradesPageState extends State<GradesPage> {
       setState(() => _isLoading = true);
     }
     
-    _gradesSub = FirebaseFirestore.instance
-        .collection('students')
-        .doc(user.uid)
-        .snapshots()
-        .listen((doc) {
-      if (!mounted) return;
-      
-      if (!doc.exists) {
-        if (mounted) setState(() => _isLoading = false);
-        return;
-      }
-      
-      final data = doc.data()!;
-      _updateGradesView(data: data);
-
-      // If no external stream is provided, drive the sections subscription from the profile data
-      if (widget.sectionsStream == null) {
-        final sections = List<String>.from(data['sections'] ?? []);
-        _updateSectionsSubscription(sections);
-      }
-    }, onError: (e) {
-      debugPrint("Error listening to profile in Grades: $e");
-      if (mounted) setState(() => _isLoading = false);
-    });
-
-    // 2. Listen to Sections (Only if provided externally)
+    // 1. Listen to Sections (Always needed to know which subcollections to listen to)
     if (widget.sectionsStream != null) {
       _sectionsSub = widget.sectionsStream!.listen((snapshot) {
         _updateGradesView(sectionsSnapshot: snapshot);
+        _refreshSectionGradesListeners(snapshot.docs.map((d) => d.id).toList());
       });
-    } 
-    // implicitly: if null, we wait for profile listener to trigger _updateSectionsSubscription
+    } else {
+      // If no sections stream, we need to find the student's sections first
+      _gradesSub = FirebaseFirestore.instance
+          .collection('students')
+          .doc(user.uid)
+          .snapshots()
+          .listen((doc) {
+        if (doc.exists) {
+          final data = doc.data()!;
+          _lastProfileData = data;
+          final sections = List<String>.from(data['sections'] ?? []);
+          _updateSectionsSubscription(sections);
+        }
+      });
+    }
   }
 
   void _listenToGradeRelease() {
@@ -211,11 +207,55 @@ class _GradesPageState extends State<GradesPage> {
         .snapshots()
         .listen((snapshot) {
       _updateGradesView(sectionsSnapshot: snapshot);
+      _refreshSectionGradesListeners(snapshot.docs.map((d) => d.id).toList());
     }, onError: (e) {
       debugPrint("Error loading sections in Grades: $e");
-      // Even if sections fail, show what we have from profile
+      // Even if sections fail, show what we have
       if (mounted) _updateGradesView(); 
     });
+  }
+
+  void _refreshSectionGradesListeners(List<String> sectionIds) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // Remove listeners for sections we are no longer in
+    final removed = _sectionGradesSubs.keys.where((id) => !sectionIds.contains(id)).toList();
+    for (var id in removed) {
+      _sectionGradesSubs[id]?.cancel();
+      _sectionGradesSubs.remove(id);
+      _sectionGradesData.remove(id);
+    }
+
+    // Add listeners for new sections
+    for (var id in sectionIds) {
+      if (!_sectionGradesSubs.containsKey(id)) {
+        _sectionGradesSubs[id] = FirebaseFirestore.instance
+            .collection('sections')
+            .doc(id)
+            .collection('studentGrades')
+            .doc(user.uid)
+            .snapshots()
+            .listen((doc) {
+          if (doc.exists) {
+            final data = doc.data()!;
+            final rawGrades = data['grades'] as Map?;
+            if (rawGrades != null) {
+              final Map<String, Map<String, double>> parsedGrades = {};
+              rawGrades.forEach((sub, qMap) {
+                if (qMap is Map) {
+                  parsedGrades[sub.toString()] = qMap.map(
+                    (k, v) => MapEntry(k.toString(), (v as num?)?.toDouble() ?? 0.0)
+                  );
+                }
+              });
+              _sectionGradesData[id] = parsedGrades;
+              if (mounted) _updateGradesView();
+            }
+          }
+        });
+      }
+    }
   }
 
   bool _areListsEqual(List<String> a, List<String> b) {
@@ -257,7 +297,6 @@ class _GradesPageState extends State<GradesPage> {
 
     if (_lastProfileData == null) return;
 
-    final gradesMap = _lastProfileData!['grades'] as Map<String, dynamic>?;
     final Map<String, Map<String, dynamic>> allSubjects = {};
 
     // 1. Get subjects from Sections
@@ -271,7 +310,7 @@ class _GradesPageState extends State<GradesPage> {
               final subject = item['subject'] as String?;
               final sem = item['semester'] as int? ?? 1;
               if (subject != null) {
-                final key = "${subject}_$sem";
+                final key = "${doc.id}_${subject}_$sem";
                 allSubjects[key] = {
                   'subject': subject,
                   'section': doc.id,
@@ -286,46 +325,38 @@ class _GradesPageState extends State<GradesPage> {
       }
     }
 
-    // 2. Hydrate with Grades
-    if (gradesMap != null) {
+    // 2. Hydrate with Grades from all sections
+    _sectionGradesData.forEach((sectionId, gradesMap) {
       gradesMap.forEach((subject, gradeVal) {
+        // Find corresponding scheduled subject for this section
         bool found = false;
-        // Match existing scheduled subjects
-        for (int s in [1, 2]) {
-          final key = "${subject}_$s";
-          if (allSubjects.containsKey(key)) {
-            _hydrateSubjectEntry(allSubjects[key]!, gradeVal);
+        // Search in allSubjects for a match with this section and subject
+        for (var entry in allSubjects.values) {
+          if (entry['section'] == sectionId && entry['subject'] == subject) {
+            _hydrateSubjectEntry(entry, gradeVal);
             found = true;
           }
         }
 
         if (!found) {
-          // Orphaned subject: check if it has any actual data before adding
-          bool hasData = false;
-          if (gradeVal is num) hasData = true;
-          if (gradeVal is Map && gradeVal.isNotEmpty) {
-            if (gradeVal.values.any((v) => v != null)) hasData = true;
-          }
-          if (!hasData) return;
-
+          // Subject exists in grades but not in current schedule for this section
+          // (Maybe it was removed from schedule but grades remained)
           int inferredSem = 1;
-          if (gradeVal is Map) {
-            if (gradeVal.containsKey('q3') || gradeVal.containsKey('q4')) {
-              inferredSem = 2;
-            }
+          if (gradeVal.containsKey('q3') || gradeVal.containsKey('q4')) {
+            inferredSem = 2;
           }
           
-          final key = "${subject}_$inferredSem";
+          final key = "${sectionId}_${subject}_$inferredSem";
           allSubjects[key] = {
             'subject': subject,
-            'section': 'Unknown',
+            'section': sectionId,
             'semester': inferredSem,
             'q1': null, 'q2': null, 'q3': null, 'q4': null, 'final': null
           };
           _hydrateSubjectEntry(allSubjects[key]!, gradeVal);
         }
       });
-    }
+    });
 
     // 3. Calculate GPAs
     final g1 = allSubjects.values.where((e) => e['semester'] == 1 && e['final'] != null).map((e) => e['final'] as double).toList();
@@ -424,46 +455,80 @@ class _GradesPageState extends State<GradesPage> {
         ),
         children: [
           const SizedBox(height: 12),
-          // Table Header
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-            ),
-            child: Row(
-              children: [
-                Expanded(flex: 3, child: Text("Subject", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                Expanded(child: Center(child: Text(_isQuarterLocked('q${semester == 1 ? 1 : 3}') ? '🔒' : h1, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)))),
-                Expanded(child: Center(child: Text(_isQuarterLocked('q${semester == 1 ? 2 : 4}') ? '🔒' : h2, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)))),
-                Expanded(child: Center(child: Text("Avg", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: HexColor("#116754"))))),
-              ],
-            ),
+          const SizedBox(height: 12),
+          Table(
+            border: TableBorder.all(color: Colors.black, width: 1.0),
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            columnWidths: const {
+              0: FlexColumnWidth(3),
+              1: FlexColumnWidth(1),
+              2: FlexColumnWidth(1),
+              3: FlexColumnWidth(1),
+            },
+            children: [
+              // Header Row
+              TableRow(
+                decoration: BoxDecoration(color: Colors.grey[100]),
+                children: [
+                  _buildCell(Text("Subject", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), alignLeft: true),
+                  _buildCell(Center(child: Text(_isQuarterLocked('q${semester == 1 ? 1 : 3}') ? '🔒' : h1, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)))),
+                  _buildCell(Center(child: Text(_isQuarterLocked('q${semester == 1 ? 2 : 4}') ? '🔒' : h2, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)))),
+                  _buildCell(Center(child: Text("Avg", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: HexColor("#116754"))))),
+                ],
+              ),
+              // Data Rows
+              if (subjects.isEmpty)
+                 TableRow(
+                   children: [
+                     _buildCell(
+                        Center(child: Text("No subjects enrolled", style: TextStyle(color: Colors.grey[500]))), 
+                        colSpan: 4
+                     ),
+                     const SizedBox(), const SizedBox(), const SizedBox() // Placeholders for validity if colSpan isn't supported directly (Flutter Table doesn't support colSpan nicely without external packages, so we use a different approach or just a single row)
+                     // Actually, standard Table doesn't support colSpan. 
+                     // fallback to a single cell in a row isn't possible. 
+                     // We'll handle empty state outside the Table or just show empty cells.
+                   ]
+                 )
+              else
+                ...subjects.map((s) {
+                  final q1Key = semester == 1 ? 'q1' : 'q3';
+                  final q2Key = semester == 1 ? 'q2' : 'q4';
+                  final displayQ1 = _isQuarterLocked(q1Key) ? '🔒' : s[q1Key];
+                  final displayQ2 = _isQuarterLocked(q2Key) ? '🔒' : s[q2Key];
+                  final isSemLocked = _isQuarterLocked(q1Key) || _isQuarterLocked(q2Key);
+                  
+                  return TableRow(
+                    decoration: const BoxDecoration(color: Colors.white),
+                    children: [
+                       _buildCell(
+                          Text(s['subject'].toUpperCase(), style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
+                          alignLeft: true
+                       ),
+                       _buildCell(Center(child: _gradeBox(displayQ1))),
+                       _buildCell(Center(child: _gradeBox(displayQ2))),
+                       _buildCell(Center(child: _gradeBox(isSemLocked ? '🔒' : s['final'], isFinal: true))),
+                    ],
+                  );
+                }),
+            ],
           ),
           
           if (subjects.isEmpty)
              Container(
                padding: const EdgeInsets.all(24),
                width: double.infinity,
-               color: Colors.grey[50],
+               decoration: BoxDecoration(
+                 border: Border(
+                   left: BorderSide(color: Colors.grey[300]!),
+                   right: BorderSide(color: Colors.grey[300]!),
+                   bottom: BorderSide(color: Colors.grey[300]!),
+                 ),
+                 color: Colors.grey[50],
+               ),
                child: Center(child: Text("No subjects enrolled", style: TextStyle(color: Colors.grey[500]))),
-             )
-          else
-            ...subjects.map((s) {
-              final q1Key = semester == 1 ? 'q1' : 'q3';
-              final q2Key = semester == 1 ? 'q2' : 'q4';
-              final displayQ1 = _isQuarterLocked(q1Key) ? '🔒' : s[q1Key];
-              final displayQ2 = _isQuarterLocked(q2Key) ? '🔒' : s[q2Key];
-              final isSemLocked = _isQuarterLocked(q1Key) || _isQuarterLocked(q2Key);
-              
-              return _buildGradeRow(
-                s['subject'],
-                displayQ1,
-                displayQ2,
-                isSemLocked ? '🔒' : s['final'],
-              );
-            }),
-            
+             ),
+             
            // Footer spacing
            const SizedBox(height: 12),
         ],
@@ -471,27 +536,17 @@ class _GradesPageState extends State<GradesPage> {
     );
   }
 
-  Widget _buildGradeRow(String subject, dynamic q1, dynamic q2, dynamic finalGrade) {
+  Widget _buildCell(Widget child, {bool alignLeft = false, int? colSpan}) {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(bottom: BorderSide(color: Colors.grey[200]!)),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 3, 
-            child: Text(subject.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.5)),
-          ),
-          Expanded(child: Center(child: _gradeBox(q1))),
-          Expanded(child: Center(child: _gradeBox(q2))),
-          Expanded(child: Center(child: _gradeBox(finalGrade, isFinal: true))),
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), // Match original padding
+      height: 60, // Consistent height
+      alignment: alignLeft ? Alignment.centerLeft : Alignment.center,
+      child: child,
     );
   }
 
+  // _buildGradeRow is no longer needed, replaced by inline TableRow creation
+  
   Widget _gradeBox(dynamic grade, {bool isFinal = false}) {
     if (grade == null) {
       return Container(

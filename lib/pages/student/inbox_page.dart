@@ -180,8 +180,9 @@ class _InboxPageState extends State<InboxPage> {
                                       ? 'No unread messages'
                                       : '$unreadCount unread message${unreadCount > 1 ? 's' : ''}',
                                   style: TextStyle(
-                                    fontSize: 16,
-                                    color: Colors.grey[600],
+                                    fontSize: 18,
+                                    color: HexColor("#111111"),
+                                    fontWeight: FontWeight.w800,
                                   ),
                                 ),
                               ],

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hexcolor/hexcolor.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
 class SchedulePage extends StatefulWidget {
@@ -15,6 +16,7 @@ class SchedulePage extends StatefulWidget {
 
 class _SchedulePageState extends State<SchedulePage> {
   bool _isLoading = true;
+  bool _showDemoSections = false;
   List<Map<String, dynamic>> _scheduleItems = [];
 
   StreamSubscription? _sectionsSub;
@@ -22,6 +24,7 @@ class _SchedulePageState extends State<SchedulePage> {
   @override
   void initState() {
     super.initState();
+    _loadDemoSectionsFlag();
     _initListener();
   }
 
@@ -29,6 +32,15 @@ class _SchedulePageState extends State<SchedulePage> {
   void dispose() {
     _sectionsSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadDemoSectionsFlag() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _showDemoSections = prefs.getBool('show_demo_sections') ?? false;
+      });
+    }
   }
 
   void _initListener() {
@@ -54,6 +66,13 @@ class _SchedulePageState extends State<SchedulePage> {
     List<Map<String, dynamic>> allItems = [];
 
     for (var doc in snapshot.docs) {
+      final sectionName = doc.id;
+
+      // Skip demo sections unless explicitly showing them
+      if ((sectionName.contains('[TUTORIAL]') || sectionName.contains('Demo Section')) && !_showDemoSections) {
+        continue;
+      }
+
       final data = doc.data() as Map<String, dynamic>?;
       if (data?['schedule'] is List) {
         final List<dynamic> schedList = data!['schedule'];
@@ -163,7 +182,7 @@ class _SchedulePageState extends State<SchedulePage> {
               const SizedBox(height: 16),
               Text(
                 'No classes scheduled for this semester',
-                style: TextStyle(color: Colors.grey[500], fontSize: 16),
+                style: TextStyle(color: Colors.grey[700], fontSize: 18, fontWeight: FontWeight.w800),
               ),
             ],
           ),
